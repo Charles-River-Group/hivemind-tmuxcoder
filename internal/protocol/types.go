@@ -47,6 +47,14 @@ const (
 
 // --- Payload Structs ---
 
+// BackendSendPayload is the payload for backend.send events.
+// Used to inject input into a workspace's PTY/stdin.
+type BackendSendPayload struct {
+	Text      string `json:"text"`                 // Text to inject
+	NoNewline bool   `json:"no_newline,omitempty"` // Don't append newline
+	Source    string `json:"source,omitempty"`     // Source context (e.g., "ui", "orchestrator")
+}
+
 // RegisterRequestPayload is the payload for bus.register.request.
 type RegisterRequestPayload struct {
 	Source       Principal `json:"source"`
