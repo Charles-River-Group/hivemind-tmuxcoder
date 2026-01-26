@@ -333,11 +333,18 @@ func (c *Client) dispatchEvent(event *protocol.EventEnvelope) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	// Log non-heartbeat events
+	if event.Type != protocol.TypeBusHeartbeat {
+		log.Printf("[CLIENT] Received event: type=%s, id=%s", event.Type, event.EventID)
+	}
+
 	// Call type-specific handlers
 	if handlers, ok := c.handlers[event.Type]; ok {
 		for _, h := range handlers {
 			h(event)
 		}
+	} else if event.Type != protocol.TypeBusHeartbeat && event.Type != protocol.TypeBusSubscribeResponse {
+		log.Printf("[CLIENT] No handler registered for event type: %s", event.Type)
 	}
 
 	// Call catch-all handlers

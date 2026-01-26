@@ -33,6 +33,8 @@ func (r *Router) Route(event *protocol.EventEnvelope, sender *Connection) error 
 		return r.handleListWorkspaces(event, sender)
 	case protocol.TypeBusSendRequest:
 		return r.handleSendRequest(event, sender)
+	case protocol.TypeBackendSend:
+		return r.handleBackendSend(event)
 	default:
 		// For other events, broadcast to subscribers
 		return r.broadcast(event, sender)
@@ -194,6 +196,21 @@ func (r *Router) handleSendRequest(event *protocol.EventEnvelope, sender *Connec
 	response.CorrelationID = event.CorrelationID
 
 	return sender.Send(response)
+}
+
+// handleBackendSend routes backend.send directly to the target workspace.
+func (r *Router) handleBackendSend(event *protocol.EventEnvelope) error {
+	log.Printf("[ROUTER] handleBackendSend: routing to workspace %s", event.WorkspaceUID)
+	target := r.registry.GetByWorkspace(event.WorkspaceUID)
+	if target == nil {
+		log.Printf("[ROUTER] handleBackendSend: target not found! Available workspaces:")
+		for _, ws := range r.registry.AllWorkspaces() {
+			log.Printf("[ROUTER]   - %s (label: %s)", ws.WorkspaceUID, ws.Label)
+		}
+		return fmt.Errorf("backend.send target not connected: %s", event.WorkspaceUID)
+	}
+	log.Printf("[ROUTER] handleBackendSend: sending to connection %s", target.ID)
+	return target.Send(event)
 }
 
 // broadcast sends an event to all matching subscribers.

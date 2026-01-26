@@ -218,6 +218,8 @@ func (b *Bridge) readPTYOutput() {
 
 // handleBackendSend handles incoming backend.send events.
 func (b *Bridge) handleBackendSend(event *protocol.EventEnvelope) {
+	log.Printf("[BRIDGE] Received backend.send event: %s", event.EventID)
+
 	var payload protocol.BackendSendPayload
 	if err := protocol.UnmarshalPayload(event.Payload, &payload); err != nil {
 		log.Printf("[BRIDGE] Invalid backend.send payload: %v", err)
@@ -229,8 +231,11 @@ func (b *Bridge) handleBackendSend(event *protocol.EventEnvelope) {
 		text += "\n"
 	}
 
+	log.Printf("[BRIDGE] Writing to PTY: %q", text)
 	if _, err := b.ptyProxy.WriteString(text); err != nil {
 		log.Printf("[BRIDGE] Failed to write to PTY: %v", err)
+	} else {
+		log.Printf("[BRIDGE] Successfully wrote to PTY")
 	}
 }
 
