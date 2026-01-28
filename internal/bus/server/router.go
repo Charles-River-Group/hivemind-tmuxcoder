@@ -232,6 +232,7 @@ func (r *Router) handleBackendSend(event *protocol.EventEnvelope) error {
 // broadcast sends an event to all matching subscribers.
 func (r *Router) broadcast(event *protocol.EventEnvelope, sender *Connection) error {
 	connections := r.registry.All()
+	delivered := 0
 
 	for _, conn := range connections {
 		// Don't send back to sender
@@ -243,6 +244,10 @@ func (r *Router) broadcast(event *protocol.EventEnvelope, sender *Connection) er
 		if conn.MatchesSubscription(event) {
 			if err := conn.Send(event); err != nil {
 				log.Printf("[ROUTER] Failed to broadcast to %s: %v", conn.ID, err)
+				_ = conn.Close()
+				r.registry.Unregister(conn.ID)
+			} else {
+				delivered++
 			}
 		}
 	}

@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,43 +58,50 @@ func (e *StreamEncoder) Encode(event *EventEnvelope) error {
 
 // StreamDecoder reads events from an io.Reader as NDJSON.
 type StreamDecoder struct {
-	scanner *bufio.Scanner
+	reader  *bufio.Reader
+	lastErr error
 }
 
 // NewStreamDecoder creates a new stream decoder.
 func NewStreamDecoder(r io.Reader) *StreamDecoder {
-	scanner := bufio.NewScanner(r)
-	// Set a larger buffer for potentially large events
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // 64KB initial, 1MB max
 	return &StreamDecoder{
-		scanner: scanner,
+		reader: bufio.NewReader(r),
 	}
 }
 
 // Decode reads and decodes the next event from the stream.
 // Returns io.EOF when there are no more events.
 func (d *StreamDecoder) Decode() (*EventEnvelope, error) {
-	if !d.scanner.Scan() {
-		if err := d.scanner.Err(); err != nil {
-			return nil, fmt.Errorf("scanner error: %w", err)
+	for {
+		line, err := d.reader.ReadBytes('\n')
+		if err != nil {
+			d.lastErr = err
+			if err == io.EOF && len(line) == 0 {
+				return nil, io.EOF
+			}
+			if err != io.EOF {
+				return nil, fmt.Errorf("read error: %w", err)
+			}
 		}
-		return nil, io.EOF
-	}
 
-	line := d.scanner.Bytes()
-	if len(line) == 0 {
-		// Skip empty lines
-		return d.Decode()
-	}
+		line = bytes.TrimRight(line, "\r\n")
+		if len(bytes.TrimSpace(line)) == 0 {
+			// Skip empty lines
+			if err == io.EOF {
+				return nil, io.EOF
+			}
+			continue
+		}
 
-	var e EventEnvelope
-	if err := json.Unmarshal(line, &e); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal event line: %w", err)
+		var e EventEnvelope
+		if err := json.Unmarshal(line, &e); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal event line: %w", err)
+		}
+		return &e, nil
 	}
-	return &e, nil
 }
 
 // Err returns any error that occurred during scanning.
 func (d *StreamDecoder) Err() error {
-	return d.scanner.Err()
+	return d.lastErr
 }

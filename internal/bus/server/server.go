@@ -418,6 +418,8 @@ func (s *BusServer) sendHeartbeats(seq int64) {
 
 		if err := conn.Send(event); err != nil {
 			log.Printf("[BUS] Failed to send heartbeat to %s: %v", conn.ID, err)
+			_ = conn.Close()
+			s.registry.Unregister(conn.ID)
 		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -23,9 +24,11 @@ func main() {
 	workspaceID := flag.String("workspace-id", "", "Display workspace ID (e.g., tmux:$1:@2)")
 	label := flag.String("label", "", "Workspace label for display")
 	shell := flag.String("shell", "", "Shell to spawn (default: $SHELL or /bin/sh)")
+	shellArgs := stringSlice{}
 	workDir := flag.String("dir", "", "Working directory (default: current directory)")
 	rows := flag.Uint("rows", 24, "Terminal rows")
 	cols := flag.Uint("cols", 80, "Terminal columns")
+	flag.Var(&shellArgs, "arg", "Shell argument (repeatable)")
 	flag.Parse()
 
 	// Resolve shell
@@ -46,7 +49,7 @@ func main() {
 	// Resolve workspace ID
 	wsID := *workspaceID
 	if wsID == "" {
-		wsID = fmt.Sprintf("bridge:%s", wsUID[:8])
+		wsID = fmt.Sprintf("bridge:%s", shortID(wsUID))
 	}
 
 	// Resolve working directory
@@ -66,6 +69,7 @@ func main() {
 		WorkspaceID:  wsID,
 		Label:        *label,
 		Command:      shellCmd,
+		Args:         shellArgs,
 		WorkDir:      dir,
 		Rows:         uint16(*rows),
 		Cols:         uint16(*cols),
@@ -100,4 +104,22 @@ func main() {
 	}
 
 	log.Println("Bridge stopped")
+}
+
+func shortID(value string) string {
+	if len(value) <= 8 {
+		return value
+	}
+	return value[:8]
+}
+
+type stringSlice []string
+
+func (s *stringSlice) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSlice) Set(value string) error {
+	*s = append(*s, value)
+	return nil
 }
