@@ -23,6 +23,8 @@ const (
 	RenderModeFormatted
 )
 
+const defaultKeepAliveInterval = 30 * time.Second
+
 // Config holds UI client configuration.
 type Config struct {
 	SocketPath    string
@@ -32,6 +34,8 @@ type Config struct {
 	Output        io.Writer
 	RendererMode  RenderMode
 	EventTypes    []string
+	// KeepAliveInterval controls client heartbeats for long-lived operations.
+	KeepAliveInterval time.Duration
 }
 
 // Client is a lightweight UI client that connects to the bus.
@@ -56,6 +60,9 @@ func NewClient(config *Config) *Client {
 	}
 	if config.Output == nil {
 		config.Output = os.Stdout
+	}
+	if config.KeepAliveInterval == 0 {
+		config.KeepAliveInterval = defaultKeepAliveInterval
 	}
 
 	clientID := config.ClientID
@@ -103,6 +110,11 @@ func (c *Client) Close() error {
 	return err
 }
 
+// WorkspaceUID returns the client's workspace UID.
+func (c *Client) WorkspaceUID() string {
+	return c.workspaceUID
+}
+
 // Tail subscribes to events and renders them until the context is cancelled.
 func (c *Client) Tail(ctx context.Context) error {
 	if c.conn == nil {
@@ -115,12 +127,21 @@ func (c *Client) Tail(ctx context.Context) error {
 
 	renderer := NewRenderer(c.config.Output, c.config.RendererMode)
 	typeFilter := makeTypeFilter(c.config.EventTypes)
+	keepAliveInterval := c.config.KeepAliveInterval
+	lastKeepAlive := time.Now()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+
+		if keepAliveInterval > 0 && time.Since(lastKeepAlive) >= keepAliveInterval {
+			if err := c.sendKeepAlive(); err != nil {
+				return err
+			}
+			lastKeepAlive = time.Now()
 		}
 
 		if err := c.conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
@@ -142,6 +163,24 @@ func (c *Client) Tail(ctx context.Context) error {
 			renderer.Render(event)
 		}
 	}
+}
+
+func (c *Client) sendKeepAlive() error {
+	payload := protocol.HeartbeatPayload{
+		TS:     time.Now().UTC().Format(time.RFC3339),
+		Status: "client",
+	}
+	payloadBytes, _ := protocol.MarshalPayload(payload)
+
+	event := protocol.NewEventEnvelope(
+		ulid.New(),
+		c.workspaceUID,
+		c.source,
+		protocol.TypeBusHeartbeat,
+		payloadBytes,
+	)
+
+	return c.encoder.Encode(event)
 }
 
 // SendInput sends a backend.send event to a target workspace.
@@ -227,7 +266,9 @@ func (c *Client) ListWorkspaces(ctx context.Context) ([]protocol.WorkspaceInfo, 
 		return nil, fmt.Errorf("not connected")
 	}
 
-	payloadBytes, _ := protocol.MarshalPayload(protocol.ListWorkspacesRequestPayload{})
+	payloadBytes, _ := protocol.MarshalPayload(protocol.ListWorkspacesRequestPayload{
+		ExcludeSelf: true,
+	})
 	requestID := ulid.New()
 
 	event := protocol.NewEventEnvelope(

@@ -256,6 +256,12 @@ func (c *Client) Close() error {
 		c.cancel()
 	}
 
+	var closeErr error
+	if c.conn != nil {
+		closeErr = c.conn.Close()
+		c.conn = nil
+	}
+
 	// Wait for goroutines with timeout
 	done := make(chan struct{})
 	go func() {
@@ -269,10 +275,7 @@ func (c *Client) Close() error {
 		log.Printf("[CLIENT] Timeout waiting for goroutines")
 	}
 
-	if c.conn != nil {
-		return c.conn.Close()
-	}
-	return nil
+	return closeErr
 }
 
 // WorkspaceUID returns the workspace UID.

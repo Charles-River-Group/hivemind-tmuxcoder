@@ -31,6 +31,9 @@ func (r *Router) Route(event *protocol.EventEnvelope, sender *Connection) error 
 		return r.handleUnsubscribe(event, sender)
 	case protocol.TypeBusListWorkspacesRequest:
 		return r.handleListWorkspaces(event, sender)
+	case protocol.TypeBusHeartbeat:
+		// Client keepalive, no routing needed.
+		return nil
 	case protocol.TypeBusSendRequest:
 		return r.handleSendRequest(event, sender)
 	case protocol.TypeBackendSend:
@@ -106,10 +109,23 @@ func (r *Router) handleUnsubscribe(event *protocol.EventEnvelope, sender *Connec
 func (r *Router) handleListWorkspaces(event *protocol.EventEnvelope, sender *Connection) error {
 	workspaces := r.registry.AllWorkspaces()
 
-	infos := make([]protocol.WorkspaceInfo, len(workspaces))
-	for i, conn := range workspaces {
-		infos[i] = conn.ToWorkspaceInfo()
+	var payload protocol.ListWorkspacesRequestPayload
+	if len(event.Payload) > 0 {
+		if err := protocol.UnmarshalPayload(event.Payload, &payload); err != nil {
+			log.Printf("[ROUTER] Invalid list workspaces payload: %v", err)
+		}
 	}
+
+	infos := make([]protocol.WorkspaceInfo, len(workspaces))
+	count := 0
+	for _, conn := range workspaces {
+		if payload.ExcludeSelf && conn.WorkspaceUID == sender.WorkspaceUID {
+			continue
+		}
+		infos[count] = conn.ToWorkspaceInfo()
+		count++
+	}
+	infos = infos[:count]
 
 	responsePayload := protocol.ListWorkspacesResponsePayload{
 		Status:     "ok",

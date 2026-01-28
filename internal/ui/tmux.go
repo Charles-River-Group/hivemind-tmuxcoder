@@ -101,17 +101,13 @@ func buildLogCommand(config TmuxConfig) []string {
 
 func buildWorkspaceCommand(config TmuxConfig) []string {
 	binPath := tmuxcoderBinary()
-	quotedBin := shellQuote(binPath)
-	script := fmt.Sprintf(`while true; do
-  clear
-  echo "TmuxCoder Workspaces"
-  echo
-  %s workspaces list
-  echo
-  echo "Send input: %s send --workspace <uid> <text>"
-  sleep %s
-done`, quotedBin, quotedBin, config.RefreshInterval.String())
-	return []string{"sh", "-c", script}
+	return []string{
+		binPath,
+		"workspaces",
+		"watch",
+		"--refresh",
+		config.RefreshInterval.String(),
+	}
 }
 
 func tmuxDisplay(ctx context.Context, format string) (string, error) {

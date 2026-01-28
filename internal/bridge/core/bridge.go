@@ -4,14 +4,18 @@ package core
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/opencode/hivemind-tmuxcoder/internal/bridge/client"
 	"github.com/opencode/hivemind-tmuxcoder/internal/bridge/pty"
 	"github.com/opencode/hivemind-tmuxcoder/internal/protocol"
+	"github.com/opencode/hivemind-tmuxcoder/pkg/util/ulid"
 )
 
 // Config holds Bridge configuration.
@@ -60,6 +64,9 @@ type Bridge struct {
 
 	mu      sync.RWMutex
 	running bool
+
+	streamID  string
+	streamSeq int64
 }
 
 // New creates a new Bridge with the given configuration.
@@ -140,6 +147,9 @@ func (b *Bridge) Run(ctx context.Context) error {
 	}
 	defer b.busClient.Close()
 
+	b.streamID = ulid.New()
+	b.streamSeq = 0
+
 	// Register event handlers
 	b.busClient.OnEvent(protocol.TypeBackendSend, b.handleBackendSend)
 	b.busClient.OnEvent(protocol.TypeBusSendDeliver, b.handleBusSendDeliver)
@@ -174,6 +184,9 @@ func (b *Bridge) Run(ctx context.Context) error {
 		log.Printf("[BRIDGE] PTY process exited")
 	}
 
+	// Close PTY before waiting on goroutines to unblock reads.
+	_ = b.ptyProxy.Close()
+
 	// Send stopped status
 	b.sendStatusUpdate("stopped")
 
@@ -186,8 +199,10 @@ func (b *Bridge) Run(ctx context.Context) error {
 // readPTYOutput reads from PTY and sends ui.log.append events.
 func (b *Bridge) readPTYOutput() {
 	defer b.wg.Done()
+	defer b.sendStreamEnd("closed")
 
 	buf := make([]byte, b.config.BufferSize)
+	nonBlocking := false
 	for {
 		select {
 		case <-b.ctx.Done():
@@ -197,8 +212,23 @@ func (b *Bridge) readPTYOutput() {
 		default:
 		}
 
+		if file := b.ptyProxy.File(); file != nil && !nonBlocking {
+			if err := file.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
+				if err := syscall.SetNonblock(int(file.Fd()), true); err == nil {
+					nonBlocking = true
+				}
+			}
+		}
+
 		n, err := b.ptyProxy.Read(buf)
 		if err != nil {
+			if os.IsTimeout(err) {
+				continue
+			}
+			if nonBlocking && (errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK)) {
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
 			if err == io.EOF || b.ctx.Err() != nil {
 				return
 			}
@@ -212,6 +242,7 @@ func (b *Bridge) readPTYOutput() {
 			if err := b.busClient.Send(event); err != nil {
 				log.Printf("[BRIDGE] Failed to send log event: %v", err)
 			}
+			b.sendStreamDelta(text)
 		}
 	}
 }
@@ -250,6 +281,40 @@ func (b *Bridge) handleBusSendDeliver(event *protocol.EventEnvelope) {
 	// For now, just log cross-workspace messages
 	// In future, this could be routed to an inbox or processed based on body.kind
 	log.Printf("[BRIDGE] Received message from %s: %+v", payload.FromWorkspaceUID, payload.Body)
+}
+
+func (b *Bridge) sendStreamDelta(text string) {
+	if b.busClient == nil {
+		return
+	}
+	b.streamSeq++
+	payload := protocol.BackendStreamDeltaPayload{
+		StreamID: b.streamID,
+		Sequence: b.streamSeq,
+		Text:     text,
+	}
+	payloadBytes, _ := protocol.MarshalPayload(payload)
+	event := b.busClient.NewEvent(protocol.TypeBackendStreamDelta, payloadBytes)
+	if err := b.busClient.Send(event); err != nil {
+		log.Printf("[BRIDGE] Failed to send stream delta: %v", err)
+	}
+}
+
+func (b *Bridge) sendStreamEnd(status string) {
+	if b.busClient == nil || b.streamID == "" {
+		return
+	}
+	payload := protocol.BackendStreamEndPayload{
+		StreamID: b.streamID,
+		Sequence: b.streamSeq,
+		TS:       time.Now().UTC().Format(time.RFC3339),
+		Status:   status,
+	}
+	payloadBytes, _ := protocol.MarshalPayload(payload)
+	event := b.busClient.NewEvent(protocol.TypeBackendStreamEnd, payloadBytes)
+	if err := b.busClient.Send(event); err != nil {
+		log.Printf("[BRIDGE] Failed to send stream end: %v", err)
+	}
 }
 
 // sendStatusUpdate sends a ui.status.update event.

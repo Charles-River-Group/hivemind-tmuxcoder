@@ -4,12 +4,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/opencode/hivemind-tmuxcoder/internal/protocol"
 	"github.com/opencode/hivemind-tmuxcoder/internal/ui"
 )
 
@@ -57,6 +60,7 @@ func printUsage() {
 	fmt.Println("  message [flags] <text> Send cross-workspace message (bus.send.request)")
 	fmt.Println("  ui [flags]             Launch tmux UI")
 	fmt.Println("  workspaces list        List active workspaces")
+	fmt.Println("  workspaces watch       Watch active workspaces (auto refresh)")
 	fmt.Println("\nRun 'tmuxcoder <command> --help' for more information.")
 }
 
@@ -218,12 +222,15 @@ func handleWorkspaces(ctx context.Context, args []string) {
 		fmt.Println("Usage: tmuxcoder workspaces <subcommand>")
 		fmt.Println("\nSubcommands:")
 		fmt.Println("  list      List workspaces")
+		fmt.Println("  watch     Watch workspaces (auto refresh)")
 		os.Exit(1)
 	}
 
 	switch args[0] {
 	case "list":
 		handleWorkspacesList(ctx, args[1:])
+	case "watch":
+		handleWorkspacesWatch(ctx, args[1:])
 	default:
 		fmt.Printf("Unknown workspaces subcommand: %s\n", args[0])
 		os.Exit(1)
@@ -246,10 +253,50 @@ func handleWorkspacesList(ctx context.Context, args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("%-36s  %-20s  %-10s\n", "WORKSPACE UID", "WORKSPACE ID", "LABEL")
-	fmt.Println(strings.Repeat("-", 80))
-	for _, w := range workspaces {
-		fmt.Printf("%-36s  %-20s  %-10s\n", w.WorkspaceUID, w.WorkspaceID, w.Label)
+	printWorkspaces(os.Stdout, filterWorkspaces(workspaces, client.WorkspaceUID()))
+}
+
+func handleWorkspacesWatch(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("workspaces watch", flag.ExitOnError)
+	var refresh time.Duration
+
+	fs.DurationVar(&refresh, "refresh", 2*time.Second, "Refresh interval")
+	fs.Parse(args)
+
+	if refresh <= 0 {
+		refresh = 2 * time.Second
+	}
+
+	config := &ui.Config{Output: os.Stdout}
+	client := ui.NewClient(config)
+
+	if err := client.Connect(ctx); err != nil {
+		fmt.Printf("Failed to connect: %v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	binPath := cliBinary()
+	ticker := time.NewTicker(refresh)
+	defer ticker.Stop()
+
+	for {
+		workspaces, err := client.ListWorkspaces(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to list workspaces: %v\n", err)
+			_ = client.Close()
+			if err := client.Connect(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to reconnect: %v\n", err)
+			}
+		} else {
+			renderWorkspacePane(os.Stdout, binPath, filterWorkspaces(workspaces, client.WorkspaceUID()))
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -286,4 +333,50 @@ func handleUI(ctx context.Context, args []string) {
 		fmt.Printf("Failed to launch tmux UI: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func printWorkspaces(out io.Writer, workspaces []protocol.WorkspaceInfo) {
+	fmt.Fprintf(out, "%-36s  %-20s  %-10s\n", "WORKSPACE UID", "WORKSPACE ID", "LABEL")
+	fmt.Fprintln(out, strings.Repeat("-", 80))
+	for _, w := range workspaces {
+		fmt.Fprintf(out, "%-36s  %-20s  %-10s\n", w.WorkspaceUID, w.WorkspaceID, w.Label)
+	}
+}
+
+func filterWorkspaces(workspaces []protocol.WorkspaceInfo, excludeUID string) []protocol.WorkspaceInfo {
+	if excludeUID == "" {
+		return workspaces
+	}
+	filtered := make([]protocol.WorkspaceInfo, 0, len(workspaces))
+	for _, ws := range workspaces {
+		if ws.WorkspaceUID == excludeUID {
+			continue
+		}
+		filtered = append(filtered, ws)
+	}
+	return filtered
+}
+
+func renderWorkspacePane(out io.Writer, binPath string, workspaces []protocol.WorkspaceInfo) {
+	clearScreen(out)
+	fmt.Fprintln(out, "TmuxCoder Workspaces")
+	fmt.Fprintln(out)
+	printWorkspaces(out, workspaces)
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Send input: %s send --workspace <uid> <text>\n", binPath)
+}
+
+func clearScreen(out io.Writer) {
+	fmt.Fprint(out, "\033[H\033[2J")
+}
+
+func cliBinary() string {
+	exe, err := os.Executable()
+	if err == nil && exe != "" {
+		if abs, err := filepath.Abs(exe); err == nil {
+			return abs
+		}
+		return exe
+	}
+	return "tmuxcoder"
 }

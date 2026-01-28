@@ -55,6 +55,24 @@ type BackendSendPayload struct {
 	Source    string `json:"source,omitempty"`     // Source context (e.g., "ui", "orchestrator")
 }
 
+// BackendStreamDeltaPayload is the payload for backend.stream.delta events.
+// It represents a streaming chunk from a backend/PTY.
+type BackendStreamDeltaPayload struct {
+	StreamID string `json:"stream_id"`
+	Sequence int64  `json:"seq"`
+	Text     string `json:"text"`
+	MIME     string `json:"mime,omitempty"`
+}
+
+// BackendStreamEndPayload is the payload for backend.stream.end events.
+// It signals the end of a stream for a given stream_id.
+type BackendStreamEndPayload struct {
+	StreamID string `json:"stream_id"`
+	Sequence int64  `json:"seq"`
+	TS       string `json:"ts"`
+	Status   string `json:"status,omitempty"`
+}
+
 // RegisterRequestPayload is the payload for bus.register.request.
 type RegisterRequestPayload struct {
 	Source       Principal `json:"source"`
@@ -94,7 +112,7 @@ type SubscribeResponsePayload struct {
 
 // ListWorkspacesRequestPayload is the payload for bus.list_workspaces.request.
 type ListWorkspacesRequestPayload struct {
-	// No fields required for basic listing
+	ExcludeSelf bool `json:"exclude_self,omitempty"`
 }
 
 // ListWorkspacesResponsePayload is the payload for bus.list_workspaces.response.
