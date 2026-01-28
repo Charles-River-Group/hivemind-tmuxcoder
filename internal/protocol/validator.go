@@ -49,6 +49,8 @@ func (v *Validator) registerDefaultTypes() {
 		TypeBusSubscribeResponse,
 		TypeBusUnsubscribeRequest,
 		TypeBusUnsubscribeResponse,
+		TypeBusCreateWorkspaceRequest,
+		TypeBusCreateWorkspaceResponse,
 		TypeBusHeartbeat,
 		TypeBusDrainingNotice,
 		TypeBusError,

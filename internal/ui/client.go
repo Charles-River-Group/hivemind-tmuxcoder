@@ -204,7 +204,6 @@ func (c *Client) SendInput(ctx context.Context, workspaceUID string, text string
 		payloadBytes,
 	)
 
-	fmt.Printf("[DEBUG] Sending backend.send to workspace %s, event_id=%s\n", workspaceUID, event.EventID)
 	return c.encoder.Encode(event)
 }
 
@@ -234,7 +233,6 @@ func (c *Client) SendMessage(ctx context.Context, toWorkspaceUID string, text st
 		payloadBytes,
 	)
 
-	fmt.Printf("[DEBUG] Sending bus.send.request to workspace %s, event_id=%s\n", toWorkspaceUID, event.EventID)
 	if err := c.encoder.Encode(event); err != nil {
 		return err
 	}
@@ -256,8 +254,25 @@ func (c *Client) SendMessage(ctx context.Context, toWorkspaceUID string, text st
 		return fmt.Errorf("send failed: %s", respPayload.Status)
 	}
 
-	fmt.Printf("[DEBUG] Message delivered, deliver_event_id=%s\n", respPayload.DeliverEventID)
 	return nil
+}
+
+// RequestCreateWorkspace sends a bus.request.create_workspace event.
+func (c *Client) RequestCreateWorkspace(ctx context.Context, payload protocol.CreateWorkspaceRequestPayload) error {
+	if c.conn == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	payloadBytes, _ := protocol.MarshalPayload(payload)
+	event := protocol.NewEventEnvelope(
+		ulid.New(),
+		c.workspaceUID,
+		c.source,
+		protocol.TypeBusCreateWorkspaceRequest,
+		payloadBytes,
+	)
+
+	return c.encoder.Encode(event)
 }
 
 // ListWorkspaces returns the list of active workspaces.

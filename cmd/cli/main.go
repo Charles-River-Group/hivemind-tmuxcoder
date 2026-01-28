@@ -43,6 +43,8 @@ func main() {
 		handleMessage(ctx, os.Args[2:])
 	case "ui":
 		handleUI(ctx, os.Args[2:])
+	case "controller":
+		handleController(ctx, os.Args[2:])
 	case "workspaces":
 		handleWorkspaces(ctx, os.Args[2:])
 	default:
@@ -59,6 +61,8 @@ func printUsage() {
 	fmt.Println("  send [flags] <text>    Send input to a workspace PTY (backend.send)")
 	fmt.Println("  message [flags] <text> Send cross-workspace message (bus.send.request)")
 	fmt.Println("  ui [flags]             Launch tmux UI")
+	fmt.Println("  ui interactive         Launch interactive control pane")
+	fmt.Println("  controller             Run workspace controller")
 	fmt.Println("  workspaces list        List active workspaces")
 	fmt.Println("  workspaces watch       Watch active workspaces (auto refresh)")
 	fmt.Println("\nRun 'tmuxcoder <command> --help' for more information.")
@@ -301,6 +305,11 @@ func handleWorkspacesWatch(ctx context.Context, args []string) {
 }
 
 func handleUI(ctx context.Context, args []string) {
+	if len(args) > 0 && args[0] == "interactive" {
+		handleUIInteractive(ctx, args[1:])
+		return
+	}
+
 	fs := flag.NewFlagSet("ui", flag.ExitOnError)
 	var (
 		sessionName   string

@@ -85,7 +85,7 @@ func LaunchTmuxUI(ctx context.Context, config TmuxConfig) error {
 
 func buildLogCommand(config TmuxConfig) []string {
 	binPath := tmuxcoderBinary()
-	args := []string{binPath, "logs", "tail", "--format"}
+	args := []string{binPath, "logs", "tail"}
 	if config.WorkspaceUID != "" {
 		args = append(args, "--workspace", config.WorkspaceUID)
 	}
@@ -101,13 +101,15 @@ func buildLogCommand(config TmuxConfig) []string {
 
 func buildWorkspaceCommand(config TmuxConfig) []string {
 	binPath := tmuxcoderBinary()
-	return []string{
+	args := []string{
 		binPath,
-		"workspaces",
-		"watch",
-		"--refresh",
-		config.RefreshInterval.String(),
+		"ui",
+		"interactive",
 	}
+	if config.RefreshInterval > 0 {
+		args = append(args, "--refresh", config.RefreshInterval.String())
+	}
+	return args
 }
 
 func tmuxDisplay(ctx context.Context, format string) (string, error) {

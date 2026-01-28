@@ -18,6 +18,8 @@ const (
 	TypeBusSubscribeResponse       = "bus.subscribe.response"
 	TypeBusUnsubscribeRequest      = "bus.unsubscribe.request"
 	TypeBusUnsubscribeResponse     = "bus.unsubscribe.response"
+	TypeBusCreateWorkspaceRequest  = "bus.request.create_workspace"
+	TypeBusCreateWorkspaceResponse = "bus.response.create_workspace"
 	TypeBusHeartbeat               = "bus.heartbeat"
 	TypeBusDrainingNotice          = "bus.draining.notice"
 	TypeBusError                   = "bus.error"
@@ -120,6 +122,28 @@ type ListWorkspacesResponsePayload struct {
 	Status     string          `json:"status"`
 	Workspaces []WorkspaceInfo `json:"workspaces,omitempty"`
 	Error      *EventError     `json:"error,omitempty"`
+}
+
+// CreateWorkspaceRequestPayload is the payload for bus.request.create_workspace.
+type CreateWorkspaceRequestPayload struct {
+	WorkspaceUID string   `json:"workspace_uid,omitempty"`
+	Label        string   `json:"label,omitempty"`
+	Command      string   `json:"command,omitempty"`
+	Args         []string `json:"args,omitempty"`
+	WorkDir      string   `json:"work_dir,omitempty"`
+	Layout       string   `json:"layout,omitempty"` // bridge-only | split-pane | new-window
+	TmuxSession  string   `json:"tmux_session,omitempty"`
+	TmuxWindow   string   `json:"tmux_window,omitempty"`
+	TmuxPane     string   `json:"tmux_pane,omitempty"`
+}
+
+// CreateWorkspaceResponsePayload is the payload for bus.response.create_workspace.
+type CreateWorkspaceResponsePayload struct {
+	Status       string      `json:"status"`
+	WorkspaceUID string      `json:"workspace_uid,omitempty"`
+	WorkspaceID  string      `json:"workspace_id,omitempty"`
+	Label        string      `json:"label,omitempty"`
+	Error        *EventError `json:"error,omitempty"`
 }
 
 // WorkspaceInfo represents a registered workspace in the bus.
