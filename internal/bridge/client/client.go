@@ -311,6 +311,9 @@ func (c *Client) sendLoop() {
 func (c *Client) recvLoop() {
 	defer c.wg.Done()
 
+	consecutiveErrors := 0
+	maxConsecutiveErrors := 5
+
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -321,40 +324,104 @@ func (c *Client) recvLoop() {
 		event, err := c.decoder.Decode()
 		if err != nil {
 			if err == io.EOF || c.ctx.Err() != nil {
+				log.Printf("[CLIENT] Connection closed")
 				return
 			}
-			log.Printf("[CLIENT] Receive error: %v", err)
+
+			// Check for fatal network errors
+			if netErr, ok := err.(net.Error); ok && !netErr.Timeout() {
+				log.Printf("[CLIENT] Fatal network error: %v", err)
+				return
+			}
+
+			consecutiveErrors++
+			if consecutiveErrors >= maxConsecutiveErrors {
+				log.Printf("[CLIENT] Too many consecutive errors (%d), closing connection", consecutiveErrors)
+				return
+			}
+
+			log.Printf("[CLIENT] Receive error: %v (consecutive: %d)", err, consecutiveErrors)
+			time.Sleep(100 * time.Millisecond) // Avoid tight loop on errors
 			continue
 		}
 
+		consecutiveErrors = 0 // Reset on successful read
 		c.dispatchEvent(event)
 	}
 }
 
 // dispatchEvent dispatches an event to registered handlers.
 func (c *Client) dispatchEvent(event *protocol.EventEnvelope) {
+	// Handle heartbeat: respond to keep connection alive
+	if event.Type == protocol.TypeBusHeartbeat {
+		c.respondToHeartbeat(event)
+		return
+	}
+
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 
 	// Log non-heartbeat events
-	if event.Type != protocol.TypeBusHeartbeat {
-		log.Printf("[CLIENT] Received event: type=%s, id=%s", event.Type, event.EventID)
-	}
+	log.Printf("[CLIENT] Received event: type=%s, id=%s", event.Type, event.EventID)
 
 	// Call type-specific handlers
 	if handlers, ok := c.handlers[event.Type]; ok {
-		for _, h := range handlers {
+		typeHandlers := make([]EventHandler, len(handlers))
+		copy(typeHandlers, handlers)
+		c.mu.RUnlock()
+
+		for _, h := range typeHandlers {
 			h(event)
 		}
-	} else if event.Type != protocol.TypeBusHeartbeat && event.Type != protocol.TypeBusSubscribeResponse {
-		log.Printf("[CLIENT] No handler registered for event type: %s", event.Type)
+	} else {
+		// Call catch-all handlers
+		if handlers, ok := c.handlers["*"]; ok {
+			catchAll := make([]EventHandler, len(handlers))
+			copy(catchAll, handlers)
+			c.mu.RUnlock()
+
+			for _, h := range catchAll {
+				h(event)
+			}
+		} else {
+			c.mu.RUnlock()
+			// No handler found
+			if event.Type != protocol.TypeBusSubscribeResponse {
+				log.Printf("[CLIENT] No handler registered for event type: %s", event.Type)
+			}
+		}
+	}
+}
+
+// respondToHeartbeat sends a heartbeat response to keep the connection alive.
+func (c *Client) respondToHeartbeat(heartbeat *protocol.EventEnvelope) {
+	// Parse the heartbeat payload to get sequence number
+	var payload protocol.HeartbeatPayload
+	if err := protocol.UnmarshalPayload(heartbeat.Payload, &payload); err != nil {
+		log.Printf("[CLIENT] Failed to parse heartbeat payload: %v", err)
+		return
 	}
 
-	// Call catch-all handlers
-	if handlers, ok := c.handlers["*"]; ok {
-		for _, h := range handlers {
-			h(event)
-		}
+	// Send back a heartbeat response to update LastSeen on the Bus Server
+	responsePayload := protocol.HeartbeatPayload{
+		ConnectionID: c.connectionID,
+		Sequence:     payload.Sequence,
+		TS:           time.Now().UTC().Format(time.RFC3339),
+		Status:       "client",
+	}
+	payloadBytes, _ := protocol.MarshalPayload(responsePayload)
+
+	response := protocol.NewEventEnvelope(
+		ulid.New(),
+		c.config.WorkspaceUID,
+		c.source,
+		protocol.TypeBusHeartbeat,
+		payloadBytes,
+	)
+	response.InReplyTo = heartbeat.EventID
+
+	// Send response asynchronously to avoid blocking
+	if err := c.Send(response); err != nil {
+		log.Printf("[CLIENT] Failed to send heartbeat response: %v", err)
 	}
 }
 
