@@ -257,22 +257,44 @@ func (c *Client) SendMessage(ctx context.Context, toWorkspaceUID string, text st
 	return nil
 }
 
-// RequestCreateWorkspace sends a bus.request.create_workspace event.
+// RequestCreateWorkspace sends a bus.request.create_workspace event and waits for response.
 func (c *Client) RequestCreateWorkspace(ctx context.Context, payload protocol.CreateWorkspaceRequestPayload) error {
 	if c.conn == nil {
 		return fmt.Errorf("not connected")
 	}
 
 	payloadBytes, _ := protocol.MarshalPayload(payload)
+	requestID := ulid.New()
 	event := protocol.NewEventEnvelope(
-		ulid.New(),
+		requestID,
 		c.workspaceUID,
 		c.source,
 		protocol.TypeBusCreateWorkspaceRequest,
 		payloadBytes,
 	)
 
-	return c.encoder.Encode(event)
+	if err := c.encoder.Encode(event); err != nil {
+		return err
+	}
+
+	// Wait for response
+	resp, err := c.waitForResponse(ctx, requestID, protocol.TypeBusCreateWorkspaceResponse)
+	if err != nil {
+		return err
+	}
+
+	var respPayload protocol.CreateWorkspaceResponsePayload
+	if err := protocol.UnmarshalPayload(resp.Payload, &respPayload); err != nil {
+		return err
+	}
+	if respPayload.Status != "ok" {
+		if respPayload.Error != nil {
+			return fmt.Errorf("create workspace failed: %s - %s", respPayload.Error.Code, respPayload.Error.Message)
+		}
+		return fmt.Errorf("create workspace failed: %s", respPayload.Status)
+	}
+
+	return nil
 }
 
 // ListWorkspaces returns the list of active workspaces.

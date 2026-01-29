@@ -20,3 +20,5 @@ coverage.out
 #local dev files
 dist/
 .plan/
+CLAUDE.md
+AGENTS.md

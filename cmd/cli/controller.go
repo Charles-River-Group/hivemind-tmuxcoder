@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	bridgeclient "github.com/opencode/hivemind-tmuxcoder/internal/bridge/client"
 	"github.com/opencode/hivemind-tmuxcoder/internal/protocol"
+	uiclient "github.com/opencode/hivemind-tmuxcoder/internal/ui"
 	"github.com/opencode/hivemind-tmuxcoder/pkg/util/ulid"
 )
 
@@ -52,11 +54,14 @@ func handleController(ctx context.Context, args []string) {
 }
 
 func handleCreateWorkspaceRequest(client *bridgeclient.Client, socketPath string, event *protocol.EventEnvelope) {
+	log.Printf("[CONTROLLER] Received create workspace request: event_id=%s", event.EventID)
 	var payload protocol.CreateWorkspaceRequestPayload
 	if err := protocol.UnmarshalPayload(event.Payload, &payload); err != nil {
+		log.Printf("[CONTROLLER] Failed to unmarshal payload: %v", err)
 		sendCreateWorkspaceResponse(client, event, "", "", "", protocol.ErrKindProtocol, protocol.ErrCodeBadSchema, err.Error())
 		return
 	}
+	log.Printf("[CONTROLLER] Request: label=%s, layout=%s, tmux_pane=%s, tmux_session=%s", payload.Label, payload.Layout, payload.TmuxPane, payload.TmuxSession)
 
 	wsUID := payload.WorkspaceUID
 	if wsUID == "" {
@@ -108,11 +113,50 @@ func handleCreateWorkspaceRequest(client *bridgeclient.Client, socketPath string
 	}
 
 	if err != nil {
+		log.Printf("[CONTROLLER] Failed to create workspace: %v", err)
 		sendCreateWorkspaceResponse(client, event, "", "", "", protocol.ErrKindBackend, protocol.ErrCodeUnknownAction, err.Error())
 		return
 	}
 
+	if err := waitForWorkspaceConnected(socketPath, wsUID, 2*time.Second); err != nil {
+		log.Printf("[CONTROLLER] Workspace did not connect: uid=%s err=%v", wsUID, err)
+		sendCreateWorkspaceResponse(client, event, "", "", "", protocol.ErrKindTransport, protocol.ErrCodeDestNotConnected, fmt.Sprintf("workspace did not connect: %v", err))
+		return
+	}
+
+	log.Printf("[CONTROLLER] Successfully created workspace: uid=%s, id=%s, label=%s", wsUID, wsID, label)
 	sendCreateWorkspaceResponse(client, event, wsUID, wsID, label, "", "", "")
+}
+
+func waitForWorkspaceConnected(socketPath, wsUID string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	client := uiclient.NewClient(&uiclient.Config{SocketPath: socketPath})
+	if err := client.Connect(ctx); err != nil {
+		return err
+	}
+	defer client.Close()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		workspaces, err := client.ListWorkspaces(ctx)
+		if err == nil {
+			for _, ws := range workspaces {
+				if ws.WorkspaceUID == wsUID {
+					return nil
+				}
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func buildBridgeArgs(socketPath, wsUID, wsID, label, command string, args []string, workDir string) []string {

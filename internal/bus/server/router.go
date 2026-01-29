@@ -36,6 +36,8 @@ func (r *Router) Route(event *protocol.EventEnvelope, sender *Connection) error 
 		return nil
 	case protocol.TypeBusSendRequest:
 		return r.handleSendRequest(event, sender)
+	case protocol.TypeBusCreateWorkspaceResponse:
+		return r.handleCreateWorkspaceResponse(event)
 	case protocol.TypeBackendSend:
 		return r.handleBackendSend(event)
 	default:
@@ -229,10 +231,21 @@ func (r *Router) handleBackendSend(event *protocol.EventEnvelope) error {
 	return target.Send(event)
 }
 
+func (r *Router) handleCreateWorkspaceResponse(event *protocol.EventEnvelope) error {
+	target := r.registry.GetByWorkspace(event.WorkspaceUID)
+	if target == nil {
+		log.Printf("[ROUTER] create_workspace.response: target not connected: workspace_uid=%s", event.WorkspaceUID)
+		return nil
+	}
+	return target.Send(event)
+}
+
 // broadcast sends an event to all matching subscribers.
 func (r *Router) broadcast(event *protocol.EventEnvelope, sender *Connection) error {
 	connections := r.registry.All()
 	delivered := 0
+
+	log.Printf("[ROUTER] Broadcasting event: type=%s, workspace_uid=%s, from=%s", event.Type, event.WorkspaceUID, sender.ID)
 
 	for _, conn := range connections {
 		// Don't send back to sender
@@ -241,17 +254,22 @@ func (r *Router) broadcast(event *protocol.EventEnvelope, sender *Connection) er
 		}
 
 		// Check if connection is subscribed
-		if conn.MatchesSubscription(event) {
+		matches := conn.MatchesSubscription(event)
+		log.Printf("[ROUTER] Checking connection %s (label=%s): matches=%v", conn.ID, conn.Label, matches)
+
+		if matches {
 			if err := conn.Send(event); err != nil {
 				log.Printf("[ROUTER] Failed to broadcast to %s: %v", conn.ID, err)
 				_ = conn.Close()
 				r.registry.Unregister(conn.ID)
 			} else {
 				delivered++
+				log.Printf("[ROUTER] Delivered to %s (label=%s)", conn.ID, conn.Label)
 			}
 		}
 	}
 
+	log.Printf("[ROUTER] Broadcast complete: delivered=%d/%d", delivered, len(connections)-1)
 	return nil
 }
 

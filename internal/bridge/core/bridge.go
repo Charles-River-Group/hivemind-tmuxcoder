@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
+	"os/signal"
 	"sync"
 	"syscall"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/opencode/hivemind-tmuxcoder/internal/bridge/pty"
 	"github.com/opencode/hivemind-tmuxcoder/internal/protocol"
 	"github.com/opencode/hivemind-tmuxcoder/pkg/util/ulid"
+	"golang.org/x/term"
 )
 
 // Config holds Bridge configuration.
@@ -67,6 +70,12 @@ type Bridge struct {
 
 	streamID  string
 	streamSeq int64
+
+	// Transparent mode fields
+	transparentCmd   *exec.Cmd
+	transparentStdin io.WriteCloser
+	transparentDone  chan struct{}
+	stdinPipe        io.WriteCloser
 }
 
 // New creates a new Bridge with the given configuration.
@@ -99,6 +108,9 @@ func applyDefaults(config *Config) {
 }
 
 // Run starts the bridge and blocks until the context is cancelled or an error occurs.
+// It automatically detects the execution environment and uses the appropriate mode:
+// - Transparent mode: when running in a real terminal (tmux split/new-window)
+// - Headless mode: when running without a terminal (background daemon)
 func (b *Bridge) Run(ctx context.Context) error {
 	b.mu.Lock()
 	if b.running {
@@ -115,6 +127,19 @@ func (b *Bridge) Run(ctx context.Context) error {
 		b.mu.Unlock()
 	}()
 
+	// Detect execution mode based on terminal availability
+	if hasRealTerminal() {
+		log.Printf("[BRIDGE] Running in transparent mode (real terminal detected)")
+		return b.runTransparentMode()
+	}
+
+	log.Printf("[BRIDGE] Running in headless PTY mode")
+	return b.runHeadlessMode()
+}
+
+// runHeadlessMode runs the bridge with an internal PTY (original behavior).
+// Used when running as a background daemon without a real terminal.
+func (b *Bridge) runHeadlessMode() error {
 	// Initialize PTY proxy
 	ptyConfig := &pty.Config{
 		Command: b.config.Command,
@@ -194,6 +219,217 @@ func (b *Bridge) Run(ctx context.Context) error {
 	b.wg.Wait()
 
 	return nil
+}
+
+// runTransparentMode runs the bridge in transparent proxy mode.
+// The child process directly inherits stdin/stdout/stderr from the current terminal,
+// while the bridge intercepts I/O for auditing and bus forwarding.
+func (b *Bridge) runTransparentMode() error {
+	clientConfig := &client.Config{
+		SocketPath:   b.config.SocketPath,
+		WorkspaceUID: b.config.WorkspaceUID,
+		WorkspaceID:  b.config.WorkspaceID,
+		Label:        b.config.Label,
+		DriveMode:    "transparent",
+		ProjectUID:   b.config.ProjectUID,
+	}
+	b.busClient = client.New(clientConfig)
+
+	if err := b.busClient.Connect(b.ctx); err != nil {
+		return err
+	}
+	defer b.busClient.Close()
+
+	b.streamID = ulid.New()
+	b.streamSeq = 0
+
+	b.busClient.OnEvent(protocol.TypeBackendSend, b.handleBackendSend)
+	b.busClient.OnEvent(protocol.TypeBusSendDeliver, b.handleBusSendDeliver)
+
+	if err := b.busClient.Subscribe(
+		[]string{b.busClient.WorkspaceUID()},
+		nil, // All types
+		true,
+	); err != nil {
+		log.Printf("[BRIDGE] Subscribe warning: %v", err)
+	}
+
+	rows, cols, err := getTerminalSize(os.Stdin)
+	if err != nil {
+		rows, cols = b.config.Rows, b.config.Cols
+	}
+
+	if err := b.startTransparentPTY(rows, cols); err != nil {
+		return err
+	}
+	defer b.ptyProxy.Close()
+
+	b.sendStatusUpdate("running")
+
+	b.wg.Add(1)
+	go b.forwardTerminalInput()
+
+	b.wg.Add(1)
+	go b.readPTYOutputToTerminal()
+
+	b.wg.Add(1)
+	go b.handleTerminalResize()
+
+	select {
+	case <-b.ctx.Done():
+		log.Printf("[BRIDGE] Context cancelled")
+	case <-b.ptyProxy.Done():
+		log.Printf("[BRIDGE] PTY process exited")
+	}
+
+	_ = b.ptyProxy.Close()
+
+	b.sendStatusUpdate("stopped")
+
+	b.wg.Wait()
+
+	return nil
+}
+
+func (b *Bridge) startTransparentPTY(rows, cols uint16) error {
+	ptyConfig := &pty.Config{
+		Command: b.config.Command,
+		Args:    b.config.Args,
+		Dir:     b.config.WorkDir,
+		Env:     b.config.Env,
+		Rows:    rows,
+		Cols:    cols,
+	}
+	var err error
+	b.ptyProxy, err = pty.New(ptyConfig)
+	if err != nil {
+		return err
+	}
+	if err := b.ptyProxy.Start(); err != nil {
+		return err
+	}
+	log.Printf("[BRIDGE] Started transparent PTY PID=%d", b.ptyProxy.PID())
+	return nil
+}
+
+func (b *Bridge) forwardTerminalInput() {
+	defer b.wg.Done()
+
+	if isTerminal(os.Stdin) {
+		state, err := term.MakeRaw(int(os.Stdin.Fd()))
+		if err == nil {
+			defer term.Restore(int(os.Stdin.Fd()), state)
+		}
+	}
+
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-b.ptyProxy.Done():
+			return
+		default:
+		}
+
+		n, err := os.Stdin.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("[BRIDGE] stdin read error: %v", err)
+			}
+			return
+		}
+
+		if n > 0 {
+			if _, err := b.ptyProxy.Write(buf[:n]); err != nil {
+				log.Printf("[BRIDGE] PTY write error: %v", err)
+				return
+			}
+
+			text := string(buf[:n])
+			event := b.busClient.NewUILogAppend("input", text)
+			if err := b.busClient.Send(event); err != nil {
+				log.Printf("[BRIDGE] Failed to send input log: %v", err)
+			}
+		}
+	}
+}
+
+func (b *Bridge) readPTYOutputToTerminal() {
+	defer b.wg.Done()
+	defer b.sendStreamEnd("closed")
+
+	buf := make([]byte, b.config.BufferSize)
+	nonBlocking := false
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-b.ptyProxy.Done():
+			return
+		default:
+		}
+
+		if file := b.ptyProxy.File(); file != nil && !nonBlocking {
+			if err := file.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
+				if err := syscall.SetNonblock(int(file.Fd()), true); err == nil {
+					nonBlocking = true
+				}
+			}
+		}
+
+		n, err := b.ptyProxy.Read(buf)
+		if err != nil {
+			if os.IsTimeout(err) {
+				continue
+			}
+			if nonBlocking && (errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK)) {
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
+			if err == io.EOF || b.ctx.Err() != nil {
+				return
+			}
+			log.Printf("[BRIDGE] PTY read error: %v", err)
+			return
+		}
+
+		if n > 0 {
+			text := string(buf[:n])
+			if _, err := os.Stdout.Write(buf[:n]); err != nil {
+				log.Printf("[BRIDGE] stdout write error: %v", err)
+				return
+			}
+			event := b.busClient.NewUILogAppend("info", text)
+			if err := b.busClient.Send(event); err != nil {
+				log.Printf("[BRIDGE] Failed to send log event: %v", err)
+			}
+			b.sendStreamDelta(text)
+		}
+	}
+}
+
+func (b *Bridge) handleTerminalResize() {
+	defer b.wg.Done()
+
+	sigwinch := make(chan os.Signal, 1)
+	signal.Notify(sigwinch, syscall.SIGWINCH)
+	defer signal.Stop(sigwinch)
+
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-b.ptyProxy.Done():
+			return
+		case <-sigwinch:
+			rows, cols, err := getTerminalSize(os.Stdin)
+			if err != nil {
+				continue
+			}
+			_ = b.ptyProxy.Resize(rows, cols)
+		}
+	}
 }
 
 // readPTYOutput reads from PTY and sends ui.log.append events.
