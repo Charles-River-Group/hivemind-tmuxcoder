@@ -88,12 +88,14 @@ func handleLogs(ctx context.Context, args []string) {
 func handleLogsTail(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("logs tail", flag.ExitOnError)
 	var (
+		socketPath    string
 		workspaceUID  string
 		includeGlobal bool
 		format        bool
 		eventTypes    string
 	)
 
+	fs.StringVar(&socketPath, "socket", "", "Bus server socket path (default: auto-detect)")
 	fs.StringVar(&workspaceUID, "workspace", "", "Workspace UID to filter by (optional)")
 	fs.BoolVar(&includeGlobal, "include-global", false, "Include global bus events")
 	fs.BoolVar(&format, "format", false, "Enable formatted output (adds timestamps/colors)")
@@ -108,7 +110,7 @@ func handleLogsTail(ctx context.Context, args []string) {
 	}
 
 	config := &ui.Config{
-		SocketPath:    "", // Use default
+		SocketPath:    socketPath,
 		IncludeGlobal: includeGlobal,
 		Output:        os.Stdout,
 		RendererMode:  renderMode,
@@ -312,6 +314,7 @@ func handleUI(ctx context.Context, args []string) {
 
 	fs := flag.NewFlagSet("ui", flag.ExitOnError)
 	var (
+		socketPath    string
 		sessionName   string
 		windowName    string
 		workspaceUID  string
@@ -320,6 +323,7 @@ func handleUI(ctx context.Context, args []string) {
 		refresh       time.Duration
 	)
 
+	fs.StringVar(&socketPath, "socket", "", "Bus server socket path (default: auto-detect)")
 	fs.StringVar(&sessionName, "session", "", "tmux session name (default: current or tmuxcoder)")
 	fs.StringVar(&windowName, "window", "tmuxcoder", "tmux window name")
 	fs.StringVar(&workspaceUID, "workspace", "", "Workspace UID to filter logs")
@@ -330,6 +334,7 @@ func handleUI(ctx context.Context, args []string) {
 	fs.Parse(args)
 
 	config := ui.TmuxConfig{
+		SocketPath:      socketPath,
 		SessionName:     sessionName,
 		WindowName:      windowName,
 		WorkspaceUID:    workspaceUID,

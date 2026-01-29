@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -493,17 +494,25 @@ func (b *Bridge) handleBackendSend(event *protocol.EventEnvelope) {
 		return
 	}
 
-	text := payload.Text
-	if !payload.NoNewline && len(text) > 0 && text[len(text)-1] != '\n' {
-		text += "\n"
-	}
-
-	log.Printf("[BRIDGE] Writing to PTY: %q", text)
-	if _, err := b.ptyProxy.WriteString(text); err != nil {
+	data := normalizePTYInput(payload.Text, payload.NoNewline)
+	log.Printf("[BRIDGE] Writing to PTY: %q", string(data))
+	if _, err := b.ptyProxy.Write(data); err != nil {
 		log.Printf("[BRIDGE] Failed to write to PTY: %v", err)
 	} else {
 		log.Printf("[BRIDGE] Successfully wrote to PTY")
 	}
+}
+
+func normalizePTYInput(text string, noNewline bool) []byte {
+	if noNewline {
+		return []byte(text)
+	}
+	text = strings.ReplaceAll(text, "\r\n", "\r")
+	text = strings.ReplaceAll(text, "\n", "\r")
+	if text == "" || text[len(text)-1] != '\r' {
+		text += "\r"
+	}
+	return []byte(text)
 }
 
 // handleBusSendDeliver handles incoming bus.send.deliver events (cross-workspace messages).

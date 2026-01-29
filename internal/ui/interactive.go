@@ -51,6 +51,10 @@ type workspacesMsg []protocol.WorkspaceInfo
 type errMsg struct{ err error }
 type statusMsg string
 type tickMsg time.Time
+type createWorkspaceDoneMsg struct {
+	label      string
+	workspaces []protocol.WorkspaceInfo
+}
 
 type interactiveModel struct {
 	ctx             context.Context
@@ -119,6 +123,17 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case statusMsg:
 		m.status = string(msg)
+		return m, nil
+	case createWorkspaceDoneMsg:
+		m.status = "create request sent for " + msg.label
+		m.workspaces = filterControllerWorkspaces(msg.workspaces)
+		if m.selected >= len(m.workspaces) {
+			m.selected = len(m.workspaces) - 1
+		}
+		if m.selected < 0 {
+			m.selected = 0
+		}
+		m.lastError = ""
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -211,17 +226,19 @@ func (m interactiveModel) updateCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.createLabel.Blur()
 			return m, nil
 		case "tab":
-			m.createView = (m.createView + 1) % len(layoutOptions)
+			layouts := m.availableLayouts()
+			m.createView = (m.createView + 1) % len(layouts)
 			return m, nil
 		case "enter":
 			label := strings.TrimSpace(m.createLabel.Value())
 			if label == "" {
 				label = fmt.Sprintf("workspace-%s", shortID(m.client.workspaceUID))
 			}
-			layout := layoutOptions[m.createView]
-			if layout != "bridge-only" && m.tmuxPane == "" {
-				return m, statusCmd("tmux context required for split/new window")
+			layouts := m.availableLayouts()
+			if m.createView >= len(layouts) {
+				m.createView = 0
 			}
+			layout := layouts[m.createView]
 			m.view = viewDashboard
 			m.createLabel.Blur()
 			return m, m.createWorkspaceCmd(label, layout)
@@ -289,7 +306,16 @@ func (m interactiveModel) viewCreate() string {
 	b.WriteString("\n")
 	b.WriteString(m.createLabel.View())
 	b.WriteString("\n")
-	fmt.Fprintf(&b, "Layout: %s (Tab to change)\n", layoutOptions[m.createView])
+	layouts := m.availableLayouts()
+	if m.createView >= len(layouts) {
+		m.createView = 0
+	}
+	layout := layouts[m.createView]
+	if m.tmuxPane == "" {
+		fmt.Fprintf(&b, "Layout: %s (run inside tmux for split/new window)\n", layout)
+	} else {
+		fmt.Fprintf(&b, "Layout: %s (Tab to change)\n", layout)
+	}
 	b.WriteString("[Enter] Create  [Esc] Cancel\n")
 	if m.status != "" {
 		b.WriteString("\n")
@@ -347,7 +373,11 @@ func (m interactiveModel) createWorkspaceCmd(label, layout string) tea.Cmd {
 		if err := m.client.RequestCreateWorkspace(m.ctx, payload); err != nil {
 			return errMsg{err: err}
 		}
-		return statusMsg("create request sent for " + label)
+		workspaces, err := m.client.ListWorkspaces(m.ctx)
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return createWorkspaceDoneMsg{label: label, workspaces: workspaces}
 	}
 }
 
@@ -375,6 +405,13 @@ func filterControllerWorkspaces(items []protocol.WorkspaceInfo) []protocol.Works
 }
 
 var layoutOptions = []string{"bridge-only", "split-pane", "new-window"}
+
+func (m interactiveModel) availableLayouts() []string {
+	if m.tmuxPane == "" {
+		return layoutOptions[:1]
+	}
+	return layoutOptions
+}
 
 func defaultShell() string {
 	if shell := os.Getenv("SHELL"); shell != "" {

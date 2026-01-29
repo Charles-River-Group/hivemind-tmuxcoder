@@ -21,6 +21,7 @@ type TmuxConfig struct {
 	IncludeGlobal   bool
 	EventTypes      []string
 	RefreshInterval time.Duration
+	SocketPath      string
 }
 
 // LaunchTmuxUI starts a tmux window with log and workspace panes.
@@ -86,6 +87,9 @@ func LaunchTmuxUI(ctx context.Context, config TmuxConfig) error {
 func buildLogCommand(config TmuxConfig) []string {
 	binPath := tmuxcoderBinary()
 	args := []string{binPath, "logs", "tail"}
+	if config.SocketPath != "" {
+		args = append(args, "--socket", config.SocketPath)
+	}
 	if config.WorkspaceUID != "" {
 		args = append(args, "--workspace", config.WorkspaceUID)
 	}
@@ -105,6 +109,9 @@ func buildWorkspaceCommand(config TmuxConfig) []string {
 		binPath,
 		"ui",
 		"interactive",
+	}
+	if config.SocketPath != "" {
+		args = append(args, "--socket", config.SocketPath)
 	}
 	if config.RefreshInterval > 0 {
 		args = append(args, "--refresh", config.RefreshInterval.String())
@@ -139,7 +146,7 @@ func tmuxNewSession(ctx context.Context, session string) error {
 }
 
 func tmuxNewWindow(ctx context.Context, session, name string, command []string) (string, error) {
-	args := []string{"new-window", "-t", session, "-n", name, "-P", "-F", "#{window_id}"}
+	args := []string{"new-window", "-t", session + ":", "-n", name, "-P", "-F", "#{window_id}"}
 	args = append(args, command...)
 	return runTmux(ctx, args...)
 }

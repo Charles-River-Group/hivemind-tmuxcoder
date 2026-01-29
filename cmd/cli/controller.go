@@ -96,7 +96,12 @@ func handleCreateWorkspaceRequest(client *bridgeclient.Client, socketPath string
 		if payload.TmuxPane == "" {
 			err = fmt.Errorf("tmux pane required for split-pane")
 		} else {
-			err = tmuxSplitWindow(payload.TmuxPane, bridgeArgs)
+			otherPane, paneErr := tmuxOtherPaneInWindow(payload.TmuxPane)
+			if paneErr == nil && otherPane != "" {
+				err = tmuxRespawnPane(otherPane, bridgeArgs)
+			} else {
+				err = tmuxSplitWindow(payload.TmuxPane, bridgeArgs)
+			}
 		}
 	case "new-window":
 		if payload.TmuxSession == "" {
@@ -201,8 +206,36 @@ func tmuxSplitWindow(target string, command []string) error {
 	return err
 }
 
+func tmuxRespawnPane(target string, command []string) error {
+	args := []string{"respawn-pane", "-k", "-t", target}
+	args = append(args, command...)
+	_, err := runTmux(args...)
+	return err
+}
+
+func tmuxOtherPaneInWindow(targetPane string) (string, error) {
+	windowID, err := runTmux("display-message", "-p", "-t", targetPane, "#{window_id}")
+	if err != nil {
+		return "", err
+	}
+
+	panesOut, err := runTmux("list-panes", "-t", windowID, "-F", "#{pane_id}")
+	if err != nil {
+		return "", err
+	}
+
+	for _, line := range strings.Split(panesOut, "\n") {
+		pane := strings.TrimSpace(line)
+		if pane == "" || pane == targetPane {
+			continue
+		}
+		return pane, nil
+	}
+	return "", fmt.Errorf("no other pane found in window %s", windowID)
+}
+
 func tmuxNewWindow(session, name string, command []string) error {
-	args := []string{"new-window", "-t", session, "-n", name, "-P", "-F", "#{window_id}"}
+	args := []string{"new-window", "-t", session + ":", "-n", name, "-P", "-F", "#{window_id}"}
 	args = append(args, command...)
 	_, err := runTmux(args...)
 	return err
