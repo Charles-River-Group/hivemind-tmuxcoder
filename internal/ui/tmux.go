@@ -65,16 +65,29 @@ func LaunchTmuxUI(ctx context.Context, config TmuxConfig) error {
 		}
 	}
 
-	windowID, err := tmuxNewWindow(ctx, sessionName, config.WindowName, buildLogCommand(config))
+	leftPane, err := tmuxNewWindow(ctx, sessionName, config.WindowName)
 	if err != nil {
 		return err
 	}
 
-	if err := tmuxSplitWindow(ctx, windowID, buildWorkspaceCommand(config)); err != nil {
+	rightPane, err := tmuxSplitWindow(ctx, leftPane)
+	if err != nil {
+		return err
+	}
+
+	if err := tmuxSendCommand(ctx, leftPane, buildLogCommand(config)); err != nil {
+		return err
+	}
+
+	if err := tmuxSendCommand(ctx, rightPane, buildWorkspaceCommand(config)); err != nil {
 		return err
 	}
 
 	if insideTmux {
+		windowID, err := tmuxWindowID(ctx, leftPane)
+		if err != nil {
+			return err
+		}
 		if err := tmuxSelectWindow(ctx, windowID); err != nil {
 			return err
 		}
@@ -145,21 +158,35 @@ func tmuxNewSession(ctx context.Context, session string) error {
 	return err
 }
 
-func tmuxNewWindow(ctx context.Context, session, name string, command []string) (string, error) {
-	args := []string{"new-window", "-t", session + ":", "-n", name, "-P", "-F", "#{window_id}"}
-	args = append(args, command...)
+func tmuxNewWindow(ctx context.Context, session, name string) (string, error) {
+	args := []string{"new-window", "-t", session + ":", "-n", name, "-P", "-F", "#{pane_id}"}
 	return runTmux(ctx, args...)
 }
 
-func tmuxSplitWindow(ctx context.Context, target string, command []string) error {
-	args := []string{"split-window", "-h", "-t", target, "-p", "30"}
-	args = append(args, command...)
-	_, err := runTmux(ctx, args...)
-	return err
+func tmuxSplitWindow(ctx context.Context, target string) (string, error) {
+	args := []string{"split-window", "-h", "-t", target, "-p", "30", "-P", "-F", "#{pane_id}"}
+	return runTmux(ctx, args...)
 }
 
 func tmuxSelectWindow(ctx context.Context, target string) error {
 	_, err := runTmux(ctx, "select-window", "-t", target)
+	return err
+}
+
+func tmuxWindowID(ctx context.Context, target string) (string, error) {
+	output, err := runTmux(ctx, "display-message", "-p", "-t", target, "#{window_id}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(output), nil
+}
+
+func tmuxSendCommand(ctx context.Context, target string, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	cmd := shellJoin(args)
+	_, err := runTmux(ctx, "send-keys", "-t", target, cmd, "C-m")
 	return err
 }
 
@@ -200,4 +227,12 @@ func shellQuote(value string) string {
 		return "''"
 	}
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func shellJoin(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	return strings.Join(quoted, " ")
 }

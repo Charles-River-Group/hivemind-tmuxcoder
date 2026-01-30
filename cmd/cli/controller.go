@@ -96,11 +96,11 @@ func handleCreateWorkspaceRequest(client *bridgeclient.Client, socketPath string
 		if payload.TmuxPane == "" {
 			err = fmt.Errorf("tmux pane required for split-pane")
 		} else {
-			otherPane, paneErr := tmuxOtherPaneInWindow(payload.TmuxPane)
-			if paneErr == nil && otherPane != "" {
-				err = tmuxRespawnPane(otherPane, bridgeArgs)
-			} else {
-				err = tmuxSplitWindow(payload.TmuxPane, bridgeArgs)
+			err = tmuxSplitWindow(payload.TmuxPane, bridgeArgs)
+			if err == nil {
+				if layoutErr := tmuxEvenLayout(payload.TmuxPane); layoutErr != nil {
+					log.Printf("[CONTROLLER] Failed to apply even layout: %v", layoutErr)
+				}
 			}
 		}
 	case "new-window":
@@ -123,14 +123,13 @@ func handleCreateWorkspaceRequest(client *bridgeclient.Client, socketPath string
 		return
 	}
 
-	if err := waitForWorkspaceConnected(socketPath, wsUID, 2*time.Second); err != nil {
-		log.Printf("[CONTROLLER] Workspace did not connect: uid=%s err=%v", wsUID, err)
-		sendCreateWorkspaceResponse(client, event, "", "", "", protocol.ErrKindTransport, protocol.ErrCodeDestNotConnected, fmt.Sprintf("workspace did not connect: %v", err))
-		return
-	}
-
 	log.Printf("[CONTROLLER] Successfully created workspace: uid=%s, id=%s, label=%s", wsUID, wsID, label)
 	sendCreateWorkspaceResponse(client, event, wsUID, wsID, label, "", "", "")
+	go func() {
+		if err := waitForWorkspaceConnected(socketPath, wsUID, 10*time.Second); err != nil {
+			log.Printf("[CONTROLLER] Workspace did not connect: uid=%s err=%v", wsUID, err)
+		}
+	}()
 }
 
 func waitForWorkspaceConnected(socketPath, wsUID string, timeout time.Duration) error {
@@ -206,38 +205,19 @@ func tmuxSplitWindow(target string, command []string) error {
 	return err
 }
 
-func tmuxRespawnPane(target string, command []string) error {
-	args := []string{"respawn-pane", "-k", "-t", target}
+func tmuxNewWindow(session, name string, command []string) error {
+	args := []string{"new-window", "-t", session + ":", "-n", name, "-P", "-F", "#{window_id}"}
 	args = append(args, command...)
 	_, err := runTmux(args...)
 	return err
 }
 
-func tmuxOtherPaneInWindow(targetPane string) (string, error) {
+func tmuxEvenLayout(targetPane string) error {
 	windowID, err := runTmux("display-message", "-p", "-t", targetPane, "#{window_id}")
 	if err != nil {
-		return "", err
+		return err
 	}
-
-	panesOut, err := runTmux("list-panes", "-t", windowID, "-F", "#{pane_id}")
-	if err != nil {
-		return "", err
-	}
-
-	for _, line := range strings.Split(panesOut, "\n") {
-		pane := strings.TrimSpace(line)
-		if pane == "" || pane == targetPane {
-			continue
-		}
-		return pane, nil
-	}
-	return "", fmt.Errorf("no other pane found in window %s", windowID)
-}
-
-func tmuxNewWindow(session, name string, command []string) error {
-	args := []string{"new-window", "-t", session + ":", "-n", name, "-P", "-F", "#{window_id}"}
-	args = append(args, command...)
-	_, err := runTmux(args...)
+	_, err = runTmux("select-layout", "-t", windowID, "even-horizontal")
 	return err
 }
 

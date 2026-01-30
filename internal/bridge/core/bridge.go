@@ -69,8 +69,9 @@ type Bridge struct {
 	mu      sync.RWMutex
 	running bool
 
-	streamID  string
-	streamSeq int64
+	streamID             string
+	streamSeq            int64
+	kittyKeyboardEnabled bool
 
 	// Transparent mode fields
 	transparentCmd   *exec.Cmd
@@ -397,6 +398,7 @@ func (b *Bridge) readPTYOutputToTerminal() {
 
 		if n > 0 {
 			text := string(buf[:n])
+			b.observePTYOutput(text)
 			if _, err := os.Stdout.Write(buf[:n]); err != nil {
 				log.Printf("[BRIDGE] stdout write error: %v", err)
 				return
@@ -475,6 +477,7 @@ func (b *Bridge) readPTYOutput() {
 
 		if n > 0 {
 			text := string(buf[:n])
+			b.observePTYOutput(text)
 			event := b.busClient.NewUILogAppend("info", text)
 			if err := b.busClient.Send(event); err != nil {
 				log.Printf("[BRIDGE] Failed to send log event: %v", err)
@@ -495,6 +498,9 @@ func (b *Bridge) handleBackendSend(event *protocol.EventEnvelope) {
 	}
 
 	data := normalizePTYInput(payload.Text, payload.NoNewline)
+	if b.isKittyKeyboardEnabled() {
+		data = normalizeKittyPTYInput(payload.Text, payload.NoNewline)
+	}
 	log.Printf("[BRIDGE] Writing to PTY: %q", string(data))
 	if _, err := b.ptyProxy.Write(data); err != nil {
 		log.Printf("[BRIDGE] Failed to write to PTY: %v", err)
@@ -507,12 +513,45 @@ func normalizePTYInput(text string, noNewline bool) []byte {
 	if noNewline {
 		return []byte(text)
 	}
-	text = strings.ReplaceAll(text, "\r\n", "\r")
-	text = strings.ReplaceAll(text, "\n", "\r")
-	if text == "" || text[len(text)-1] != '\r' {
-		text += "\r"
+	text = normalizeTextPayload(text)
+	text = strings.TrimRight(text, "\r\n")
+	return []byte(text + "\r")
+}
+
+func normalizeKittyPTYInput(text string, noNewline bool) []byte {
+	if noNewline {
+		return []byte(text)
 	}
-	return []byte(text)
+	text = normalizeTextPayload(text)
+	text = strings.TrimRight(text, "\r\n")
+	return []byte(text + "\x1b[13;1u")
+}
+
+func normalizeTextPayload(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	return text
+}
+
+func (b *Bridge) observePTYOutput(text string) {
+	if strings.Contains(text, "\x1b[>1u") || strings.Contains(text, "\x1b[>u") {
+		b.mu.Lock()
+		b.kittyKeyboardEnabled = true
+		b.mu.Unlock()
+		return
+	}
+	if strings.Contains(text, "\x1b[<u") {
+		b.mu.Lock()
+		b.kittyKeyboardEnabled = false
+		b.mu.Unlock()
+		return
+	}
+}
+
+func (b *Bridge) isKittyKeyboardEnabled() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.kittyKeyboardEnabled
 }
 
 // handleBusSendDeliver handles incoming bus.send.deliver events (cross-workspace messages).

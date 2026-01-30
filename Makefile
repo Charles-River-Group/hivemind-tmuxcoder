@@ -41,10 +41,24 @@ clean:
 	rm -f $(BUS_BIN) $(BRIDGE_BIN) $(CLI_BIN) $(BINDIR)/tmuxcoder-*.tar.gz
 
 bus: $(BUS_BIN)
-	@mkdir -p $(RUN_DIR); $(BUS_BIN) $(BUS_FLAGS) >$(RUN_DIR)/bus.log 2>&1 & echo $$! >$(RUN_DIR)/bus.pid
+	@set -e; \
+	mkdir -p $(RUN_DIR); \
+	if [ -f "$(RUN_DIR)/bus.pid" ] && kill -0 $$(cat "$(RUN_DIR)/bus.pid") 2>/dev/null; then \
+		echo "bus already running (pid $$(cat "$(RUN_DIR)/bus.pid"))"; \
+	else \
+		$(BUS_BIN) $(BUS_FLAGS) >$(RUN_DIR)/bus.log 2>&1 & echo $$! >$(RUN_DIR)/bus.pid; \
+		echo "bus started (pid $$(cat "$(RUN_DIR)/bus.pid"))"; \
+	fi
 
 controller: $(CLI_BIN)
-	@mkdir -p $(RUN_DIR); $(CLI_BIN) controller $(CONTROLLER_FLAGS) >$(RUN_DIR)/controller.log 2>&1 & echo $$! >$(RUN_DIR)/controller.pid
+	@set -e; \
+	mkdir -p $(RUN_DIR); \
+	if [ -f "$(RUN_DIR)/controller.pid" ] && kill -0 $$(cat "$(RUN_DIR)/controller.pid") 2>/dev/null; then \
+		echo "controller already running (pid $$(cat "$(RUN_DIR)/controller.pid"))"; \
+	else \
+		$(CLI_BIN) controller $(CONTROLLER_FLAGS) >$(RUN_DIR)/controller.log 2>&1 & echo $$! >$(RUN_DIR)/controller.pid; \
+		echo "controller started (pid $$(cat "$(RUN_DIR)/controller.pid"))"; \
+	fi
 
 ui: $(CLI_BIN)
 	@$(CLI_BIN) ui $(UI_FLAGS)
