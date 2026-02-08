@@ -241,20 +241,15 @@ func main() {
 			claimedSessions[msg.SessionID] = true
 		}
 
-		// Format text with source label
-		text := msg.Text
-		if msg.Source != "" {
-			text = fmt.Sprintf("[%s:%s] %s", msg.Source, msg.Role, text)
-		} else {
-			text = fmt.Sprintf("[%s] %s", msg.Role, text)
-		}
+		// Format text with source label for UI display
+		text := formatUILogText(msg)
 
 		// Send to bus
 		event := busClient.NewUILogAppend("info", text)
 		if err := busClient.Send(event); err != nil {
 			log.Printf("[INGEST] Send error: %v", err)
 		} else {
-			log.Printf("[INGEST] Sent to bus: %s", text)
+			log.Printf("[INGEST] Sent to bus: role=%s source=%s text_len=%d", msg.Role, msg.Source, len(msg.Text))
 		}
 	})
 	if err != nil {
@@ -284,4 +279,17 @@ func expandHome(path string) string {
 		return filepath.Join(home, path[2:])
 	}
 	return path
+}
+
+func formatUILogText(msg *ingest.ParsedMessage) string {
+	label := msg.Role
+	if msg.Source != "" {
+		label = fmt.Sprintf("%s:%s", msg.Source, msg.Role)
+	}
+
+	text := strings.TrimRight(msg.Text, "\n")
+	if text == "" {
+		return fmt.Sprintf("[%s]\n", label)
+	}
+	return fmt.Sprintf("[%s]\n%s\n\n", label, text)
 }

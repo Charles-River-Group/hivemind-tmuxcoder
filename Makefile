@@ -5,6 +5,7 @@ BUS_BIN := $(BINDIR)/tmuxcoder-bus
 BRIDGE_BIN := $(BINDIR)/tmuxcoder-bridge
 INGEST_BIN := $(BINDIR)/tmuxcoder-ingest
 CLI_BIN := $(BINDIR)/tmuxcoder
+PACKAGE_BINS := $(notdir $(BUS_BIN)) $(notdir $(BRIDGE_BIN)) $(notdir $(INGEST_BIN)) $(notdir $(CLI_BIN))
 RUN_DIR ?= .run
 SOCKET ?=
 
@@ -18,6 +19,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 PACKAGE_NAME := tmuxcoder-$(VERSION)-$(GOOS)-$(GOARCH).tar.gz
+INGEST_LDFLAGS := -X main.Version=$(VERSION)
 
 all: build
 
@@ -33,14 +35,14 @@ $(BRIDGE_BIN):
 
 $(INGEST_BIN):
 	@mkdir -p $(BINDIR)
-	go build -o $@ ./cmd/ingest
+	go build -ldflags "$(INGEST_LDFLAGS)" -o $@ ./cmd/ingest
 
 $(CLI_BIN):
 	@mkdir -p $(BINDIR)
 	go build -o $@ ./cmd/cli
 
 package: build
-	tar -C $(BINDIR) -czf $(BINDIR)/$(PACKAGE_NAME) $(notdir $(BUS_BIN)) $(notdir $(BRIDGE_BIN)) $(notdir $(CLI_BIN))
+	tar -C $(BINDIR) -czf $(BINDIR)/$(PACKAGE_NAME) $(PACKAGE_BINS)
 
 clean:
 	rm -f $(BUS_BIN) $(BRIDGE_BIN) $(INGEST_BIN) $(CLI_BIN) $(BINDIR)/tmuxcoder-*.tar.gz
