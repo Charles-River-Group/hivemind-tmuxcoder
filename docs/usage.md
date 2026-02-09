@@ -1,150 +1,111 @@
-# TmuxCoder Usage Guide
+# TmuxCoder 纯日志采集模式
 
-This document summarizes the available build, packaging, and run commands in this repository to help you get started quickly and use TmuxCoder in day‑to‑day work.
+本文仅说明“纯日志采集模式”的使用：通过 `tmuxcoder-ingest` 把 Codex / Claude 的会话日志写入总线，再用 `tmuxcoder logs tail` 或 `tmuxcoder ui` 查看。
 
-## Build and Package
+## 构建与打包
 
-Recommended: use the Makefile:
+推荐用 Makefile：
 
 ```sh
-# Build all binaries (outputs to dist/)
+# 构建全部二进制（输出到 dist/）
 make build
 
-# Package as tar.gz (includes bus/bridge/ingest/cli)
+# 打包为 tar.gz（包含 bus/ingest/cli）
 make package
 ```
 
-You can also use Go directly:
+也可直接用 Go：
 
 ```sh
-# Build all cmd/*
+# 构建全部 cmd/*
 go build ./cmd/...
 
-# Example: build a single binary
+# 单个构建示例
 go build -o dist/tmuxcoder ./cmd/cli
 ```
 
-## Core Components and How to Run Them
+## 组件（纯日志采集）
 
-The main components are:
+- `tmuxcoder-bus`：消息总线服务
+- `tmuxcoder-ingest`：日志采集（Codex / Claude JSONL）
+- `tmuxcoder`：统一 CLI（`logs tail` / `ui`）
 
-- `tmuxcoder-bus`: message bus service
-- `tmuxcoder-bridge`: workspace bridge (PTY / shell)
-- `tmuxcoder-ingest`: log ingestion (Codex / Claude JSONL)
-- `tmuxcoder`: unified CLI (logs / ui / send / message / workspaces / controller)
-
-### bus (message bus)
+## 启动顺序（纯日志采集）
 
 ```sh
-# Default socket: $XDG_RUNTIME_DIR/tmuxcoder/bus.sock
-# Fallback:       ~/.tmuxcoder/run/bus.sock
+# 1) 启动 bus
+make bus
+# 或：dist/tmuxcoder-bus
+
+# 2) 启动 ingest（示例：Codex session）
+dist/tmuxcoder-ingest --codex-session <session-id>
+
+# 3) tail 日志（命令行）
+dist/tmuxcoder logs tail --include-global
+
+# 4) 或启动 tmux UI（只显示日志）
+dist/tmuxcoder ui
+```
+
+## bus（总线）
+
+```sh
+# 默认 socket：$XDG_RUNTIME_DIR/tmuxcoder/bus.sock
+# fallback：~/.tmuxcoder/run/bus.sock
+
 dist/tmuxcoder-bus
 
-# Specify socket explicitly
+# 指定 socket
 dist/tmuxcoder-bus -socket /tmp/tmuxcoder/bus.sock
 ```
 
-### bridge (single workspace bridge)
+## ingest（采集 Codex / Claude 会话）
 
 ```sh
-# Use default shell and current directory
-dist/tmuxcoder-bridge
-
-# Specify socket, working directory, and shell
-dist/tmuxcoder-bridge -socket /tmp/tmuxcoder/bus.sock -dir /path/to/project -shell /bin/zsh
-```
-
-### ingest (ingest Codex / Claude sessions)
-
-```sh
-# Locate rollout.jsonl via Codex session id
+# 通过 Codex session id 查找 rollout.jsonl
 dist/tmuxcoder-ingest --codex-session <session-id>
 
-# Locate jsonl via Claude session id
+# 通过 Claude session id 查找 jsonl
 dist/tmuxcoder-ingest --claude-session <session-id>
 
-# Find latest session via Claude project (path or name)
+# 通过 Claude project（路径或名称）查找最新 session
 dist/tmuxcoder-ingest --claude-project /Users/you/work/project
 
-# Directly specify log file or directory
+# 直接指定 log 文件或目录
 dist/tmuxcoder-ingest --log-path /path/to/log.jsonl
 dist/tmuxcoder-ingest --watch /path/to/dir --watch /another/dir
 ```
 
-Common filtering options:
+常用过滤选项：
 
-- `--from-begin`: read from the beginning of the file
-- `--project`: only process files whose project path matches
-- `--session-id`: only process content for the given session ID
-- `--socket` / `--workspace-uid` / `--label`: configure bus connection and event labels
+- `--from-begin`：从文件头开始读取
+- `--project`：仅处理匹配项目路径的文件
+- `--session-id`：仅处理指定 session ID 的内容
+- `--socket` / `--workspace-uid` / `--label`：设置 bus 连接与事件标识
 
-## CLI (tmuxcoder) Common Commands
-
-### logs tail
+## logs tail（查看日志）
 
 ```sh
-# Tail logs (subscribes to ui.log.append and ui.status.update by default)
+# tail 日志（默认订阅 ui.log.append 和 ui.status.update）
 dist/tmuxcoder logs tail --socket /tmp/tmuxcoder/bus.sock --include-global
 
-# Pretty-print output (timestamps / levels)
+# 格式化输出（时间戳/级别）
 dist/tmuxcoder logs tail --format
 
-# Custom event types
+# 自定义事件类型
 dist/tmuxcoder logs tail --types ui.log.append,ui.status.update
 ```
 
-### ui (tmux UI)
+## ui（tmux 日志窗口）
 
 ```sh
-# Start the tmux UI (current or new session)
+# 启动 tmux UI（仅日志面板）
 dist/tmuxcoder ui
-
-# Start the interactive control panel
-dist/tmuxcoder ui interactive
 ```
 
-### workspaces
+## 参考
 
-```sh
-dist/tmuxcoder workspaces list
-dist/tmuxcoder workspaces watch --refresh 2s
-```
-
-### send / message
-
-```sh
-# Send input to a specific workspace
-dist/tmuxcoder send --workspace <uid> "ls -la"
-
-# Send a message across workspaces
-dist/tmuxcoder message --to <uid> "hello"
-```
-
-## Recommended Local Quickstart Flow
-
-```sh
-# 1) Build binaries
-make build
-
-# 2) Start the bus
-make bus
-
-# 3) Start the controller
-make controller
-
-# 4) Start the UI
-make ui
-
-# 5) Start a bridge (or another entrypoint)
-dist/tmuxcoder-bridge
-
-# 6) Tail logs
-dist/tmuxcoder logs tail --include-global
-```
-
-## Reference
-
-For more command options, use `--help`:
+更多参数说明：
 
 ```sh
 dist/tmuxcoder --help

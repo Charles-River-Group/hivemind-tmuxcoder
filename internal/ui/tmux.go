@@ -8,23 +8,21 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/opencode/hivemind-tmuxcoder/internal/protocol"
 )
 
 // TmuxConfig holds settings for launching the tmux UI.
 type TmuxConfig struct {
-	SessionName     string
-	WindowName      string
-	WorkspaceUID    string
-	IncludeGlobal   bool
-	EventTypes      []string
-	RefreshInterval time.Duration
-	SocketPath      string
+	SessionName   string
+	WindowName    string
+	WorkspaceUID  string
+	IncludeGlobal bool
+	EventTypes    []string
+	SocketPath    string
 }
 
-// LaunchTmuxUI starts a tmux window with log and workspace panes.
+// LaunchTmuxUI starts a tmux window with a log pane.
 func LaunchTmuxUI(ctx context.Context, config TmuxConfig) error {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return fmt.Errorf("tmux not found in PATH")
@@ -32,9 +30,6 @@ func LaunchTmuxUI(ctx context.Context, config TmuxConfig) error {
 
 	if config.WindowName == "" {
 		config.WindowName = "tmuxcoder"
-	}
-	if config.RefreshInterval <= 0 {
-		config.RefreshInterval = 2 * time.Second
 	}
 	if len(config.EventTypes) == 0 {
 		config.EventTypes = []string{protocol.TypeUILogAppend, protocol.TypeUIStatusUpdate}
@@ -65,26 +60,17 @@ func LaunchTmuxUI(ctx context.Context, config TmuxConfig) error {
 		}
 	}
 
-	leftPane, err := tmuxNewWindow(ctx, sessionName, config.WindowName)
+	logPane, err := tmuxNewWindow(ctx, sessionName, config.WindowName)
 	if err != nil {
 		return err
 	}
 
-	rightPane, err := tmuxSplitWindow(ctx, leftPane)
-	if err != nil {
-		return err
-	}
-
-	if err := tmuxSendCommand(ctx, leftPane, buildLogCommand(config)); err != nil {
-		return err
-	}
-
-	if err := tmuxSendCommand(ctx, rightPane, buildWorkspaceCommand(config)); err != nil {
+	if err := tmuxSendCommand(ctx, logPane, buildLogCommand(config)); err != nil {
 		return err
 	}
 
 	if insideTmux {
-		windowID, err := tmuxWindowID(ctx, leftPane)
+		windowID, err := tmuxWindowID(ctx, logPane)
 		if err != nil {
 			return err
 		}
@@ -112,22 +98,6 @@ func buildLogCommand(config TmuxConfig) []string {
 	types := cleanTypes(config.EventTypes)
 	if len(types) > 0 {
 		args = append(args, "--types", strings.Join(types, ","))
-	}
-	return args
-}
-
-func buildWorkspaceCommand(config TmuxConfig) []string {
-	binPath := tmuxcoderBinary()
-	args := []string{
-		binPath,
-		"ui",
-		"interactive",
-	}
-	if config.SocketPath != "" {
-		args = append(args, "--socket", config.SocketPath)
-	}
-	if config.RefreshInterval > 0 {
-		args = append(args, "--refresh", config.RefreshInterval.String())
 	}
 	return args
 }
@@ -160,11 +130,6 @@ func tmuxNewSession(ctx context.Context, session string) error {
 
 func tmuxNewWindow(ctx context.Context, session, name string) (string, error) {
 	args := []string{"new-window", "-t", session + ":", "-n", name, "-P", "-F", "#{pane_id}"}
-	return runTmux(ctx, args...)
-}
-
-func tmuxSplitWindow(ctx context.Context, target string) (string, error) {
-	args := []string{"split-window", "-h", "-t", target, "-p", "30", "-P", "-F", "#{pane_id}"}
 	return runTmux(ctx, args...)
 }
 
