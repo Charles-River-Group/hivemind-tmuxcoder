@@ -245,7 +245,7 @@ func main() {
 		text := formatUILogText(msg)
 
 		// Send to bus
-		event := busClient.NewUILogAppend("info", text)
+		event := busClient.NewUILogAppend("info", text, msg.SessionID)
 		if err := busClient.Send(event); err != nil {
 			log.Printf("[INGEST] Send error: %v", err)
 		} else {

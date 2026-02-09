@@ -226,9 +226,10 @@ type QueueDepth struct {
 
 // UILogAppendPayload is the payload for ui.log.append.
 type UILogAppendPayload struct {
-	Level   string                 `json:"level"` // debug | info | warn | error
-	Text    string                 `json:"text"`
-	Context map[string]interface{} `json:"context,omitempty"`
+	Level     string                 `json:"level"` // debug | info | warn | error
+	Text      string                 `json:"text"`
+	SessionID string                 `json:"session_id,omitempty"`
+	Context   map[string]interface{} `json:"context,omitempty"`
 }
 
 // UIStatusUpdatePayload is the payload for ui.status.update.

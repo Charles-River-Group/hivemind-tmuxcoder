@@ -29,6 +29,7 @@ go build -o dist/tmuxcoder ./cmd/cli
 - `tmuxcoder-bus`：消息总线服务
 - `tmuxcoder-ingest`：日志采集（Codex / Claude JSONL）
 - `tmuxcoder`：统一 CLI（`logs tail` / `ui`）
+- `tmuxcoder-sink`：SQLite 落盘（可选）
 
 ## 启动顺序（纯日志采集）
 
@@ -45,6 +46,9 @@ dist/tmuxcoder logs tail --include-global
 
 # 4) 或启动 tmux UI（只显示日志）
 dist/tmuxcoder ui
+
+# 5) 可选：启动 SQLite sink（把日志落盘）
+dist/tmuxcoder-sink --db-path ~/.tmuxcoder/model_outputs.db
 ```
 
 ## bus（总线）
@@ -101,6 +105,22 @@ dist/tmuxcoder logs tail --types ui.log.append,ui.status.update
 ```sh
 # 启动 tmux UI（仅日志面板）
 dist/tmuxcoder ui
+```
+
+## sink（SQLite 落盘）
+
+```sh
+# 默认路径：~/.tmuxcoder/model_outputs.db
+dist/tmuxcoder-sink
+
+# 指定路径
+dist/tmuxcoder-sink --db-path /Users/user/.tmuxcoder/model_outputs.db
+
+# 仅存 codex / claude
+dist/tmuxcoder-sink --sources codex,claude
+
+# 关闭时写入未配对的 user 记录
+dist/tmuxcoder-sink --flush-on-exit
 ```
 
 ## 参考

@@ -437,10 +437,11 @@ func (c *Client) NewEvent(eventType string, payload json.RawMessage) *protocol.E
 }
 
 // NewUILogAppend creates a ui.log.append event.
-func (c *Client) NewUILogAppend(level, text string) *protocol.EventEnvelope {
+func (c *Client) NewUILogAppend(level, text, sessionID string) *protocol.EventEnvelope {
 	payload := protocol.UILogAppendPayload{
-		Level: level,
-		Text:  text,
+		Level:     level,
+		Text:      text,
+		SessionID: sessionID,
 	}
 	payloadBytes, _ := protocol.MarshalPayload(payload)
 	return c.NewEvent(protocol.TypeUILogAppend, payloadBytes)
