@@ -1,23 +1,29 @@
-package main
+package sink
 
 import (
 	"context"
 	"database/sql"
-	"flag"
+	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 
 	bridgeclient "github.com/opencode/hivemind-tmuxcoder/internal/bridge/client"
 	"github.com/opencode/hivemind-tmuxcoder/internal/protocol"
 
 	_ "modernc.org/sqlite"
 )
+
+type Config struct {
+	SocketPath    string
+	DBPath        string
+	IncludeGlobal bool
+	Sources       []string
+	Rebuild       bool
+}
 
 type logEvent struct {
 	ts           string
@@ -28,75 +34,50 @@ type logEvent struct {
 	text         string
 }
 
-type sinkWriter struct {
-	db   *sql.DB
+type writer struct {
 	stmt *sql.Stmt
 }
 
-func main() {
-	var (
-		socketPath    string
-		dbPath        string
-		includeGlobal bool
-		sourcesRaw    string
-	)
-
-	flag.StringVar(&socketPath, "socket", "", "Bus server socket path (default: auto-detect)")
-	flag.StringVar(&dbPath, "db-path", defaultDBPath(), "SQLite DB path")
-	flag.BoolVar(&includeGlobal, "include-global", false, "Include global bus events")
-	flag.StringVar(&sourcesRaw, "sources", "codex,claude", "Comma-separated sources to keep (empty = all)")
-	flag.Parse()
-
-	sourceFilter := parseFilter(sourcesRaw)
-
+func Run(ctx context.Context, cfg Config) error {
+	dbPath := cfg.DBPath
+	if dbPath == "" {
+		dbPath = defaultDBPath()
+	}
 	resolvedDBPath := expandHome(dbPath)
 	if err := ensureDir(filepath.Dir(resolvedDBPath)); err != nil {
-		log.Fatalf("failed to create db directory: %v", err)
+		return fmt.Errorf("failed to create db directory: %w", err)
 	}
 
 	db, err := sql.Open("sqlite", resolvedDBPath)
 	if err != nil {
-		log.Fatalf("failed to open sqlite db: %v", err)
+		return fmt.Errorf("failed to open sqlite db: %w", err)
 	}
 	defer db.Close()
 
-	if err := initDB(db); err != nil {
-		log.Fatalf("failed to init db: %v", err)
+	if err := initDB(db, cfg.Rebuild); err != nil {
+		return fmt.Errorf("failed to init db: %w", err)
 	}
 
 	stmt, err := db.Prepare(`INSERT INTO model_outputs
 		(ts, source, role, session_id, workspace_uid, text)
 		VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		log.Fatalf("failed to prepare insert: %v", err)
+		return fmt.Errorf("failed to prepare insert: %w", err)
 	}
 	defer stmt.Close()
 
-	writer := &sinkWriter{
-		db:   db,
-		stmt: stmt,
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		cancel()
-	}()
+	sourceFilter := parseFilter(cfg.Sources)
 
 	clientCfg := bridgeclient.DefaultConfig()
-	if socketPath != "" {
-		clientCfg.SocketPath = socketPath
+	if cfg.SocketPath != "" {
+		clientCfg.SocketPath = cfg.SocketPath
 	}
 	clientCfg.Label = "tmuxcoder-sink"
 	clientCfg.DriveMode = "sink"
 
 	client := bridgeclient.New(clientCfg)
 	if err := client.Connect(ctx); err != nil {
-		log.Fatalf("failed to connect to bus: %v", err)
+		return fmt.Errorf("failed to connect to bus: %w", err)
 	}
 	defer client.Close()
 
@@ -104,10 +85,22 @@ func main() {
 	var wg sync.WaitGroup
 	var stopped atomic.Bool
 
+	w := &writer{stmt: stmt}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		writer.run(ctx, eventCh)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-eventCh:
+				if !ok {
+					return
+				}
+				w.insertRow(ev)
+			}
+		}
 	}()
 
 	client.OnEvent(protocol.TypeBusSubscribeResponse, func(*protocol.EventEnvelope) {})
@@ -140,30 +133,17 @@ func main() {
 		}
 	})
 
-	if err := client.Subscribe(nil, []string{protocol.TypeUILogAppend}, includeGlobal); err != nil {
-		log.Fatalf("subscribe failed: %v", err)
+	if err := client.Subscribe(nil, []string{protocol.TypeUILogAppend}, cfg.IncludeGlobal); err != nil {
+		return fmt.Errorf("subscribe failed: %w", err)
 	}
 
 	<-ctx.Done()
 	stopped.Store(true)
 	wg.Wait()
+	return nil
 }
 
-func (w *sinkWriter) run(ctx context.Context, ch <-chan logEvent) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev, ok := <-ch:
-			if !ok {
-				return
-			}
-			w.insertRow(ev)
-		}
-	}
-}
-
-func (w *sinkWriter) insertRow(ev logEvent) {
+func (w *writer) insertRow(ev logEvent) {
 	_, err := w.stmt.Exec(ev.ts, ev.source, ev.role, nullIfEmpty(ev.sessionID), ev.workspaceUID, ev.text)
 	if err != nil {
 		log.Printf("insert failed: %v", err)
@@ -212,9 +192,9 @@ func isRoleAllowed(role string) bool {
 	}
 }
 
-func parseFilter(raw string) map[string]bool {
+func parseFilter(sources []string) map[string]bool {
 	result := make(map[string]bool)
-	for _, part := range strings.Split(raw, ",") {
+	for _, part := range sources {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
@@ -234,7 +214,7 @@ func isSourceAllowed(source string, filter map[string]bool) bool {
 	return filter[source]
 }
 
-func initDB(db *sql.DB) error {
+func initDB(db *sql.DB, rebuild bool) error {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL;",
 		"PRAGMA synchronous=NORMAL;",
@@ -247,11 +227,10 @@ func initDB(db *sql.DB) error {
 		}
 	}
 
-	if _, err := db.Exec(`DROP TABLE IF EXISTS turns;`); err != nil {
-		return err
-	}
-	if _, err := db.Exec(`DROP TABLE IF EXISTS model_outputs;`); err != nil {
-		return err
+	if rebuild {
+		if _, err := db.Exec(`DROP TABLE IF EXISTS model_outputs;`); err != nil {
+			return err
+		}
 	}
 
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS model_outputs (
