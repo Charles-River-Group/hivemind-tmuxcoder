@@ -61,6 +61,11 @@ dist/tmuxcoder logs tail --include-global
 dist/tmuxcoder status
 ```
 
+如果希望在 tmux 中实时刷新（类似仪表盘）：
+```sh
+dist/tmuxcoder status --ui
+```
+
 ---
 
 ## 4. 首次使用：一键安装 skill（必要）

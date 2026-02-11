@@ -204,20 +204,67 @@ func handleLogs(ctx context.Context, args []string) {
 }
 
 func handleStatus(ctx context.Context, args []string) {
-	_ = ctx
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	var (
 		socketPath    string
 		dbPath        string
 		claimDir      string
 		tmuxSessionID string
+		watchInterval time.Duration
+		clearScreen   bool
+		uiEnabled     bool
+		uiSession     string
+		uiWindow      string
 	)
 
 	fs.StringVar(&socketPath, "socket", "", "Bus socket path (default: auto-detect)")
 	fs.StringVar(&dbPath, "db-path", "", "SQLite DB path (default: ~/.tmuxcoder/model_outputs.db)")
 	fs.StringVar(&claimDir, "claim-dir", "", "Ingest claim dir (default: ~/.tmuxcoder/run/ingest-claims)")
 	fs.StringVar(&tmuxSessionID, "tmux-session-id", "", "Tmuxcoder session ID (optional)")
+	fs.DurationVar(&watchInterval, "watch", 0, "Refresh interval (e.g. 2s)")
+	fs.BoolVar(&clearScreen, "clear", false, "Clear screen on each refresh when --watch is set")
+	fs.BoolVar(&uiEnabled, "ui", false, "Open tmux UI status window")
+	fs.StringVar(&uiSession, "ui-session", "", "tmux session name (default: current or tmuxcoder)")
+	fs.StringVar(&uiWindow, "ui-window", "tmuxcoder-status", "tmux window name")
 	fs.Parse(args)
+
+	if uiEnabled {
+		if watchInterval <= 0 {
+			watchInterval = 2 * time.Second
+		}
+		statusCfg := ui.StatusConfig{
+			SessionName:   uiSession,
+			WindowName:    uiWindow,
+			SocketPath:    socketPath,
+			DBPath:        dbPath,
+			ClaimDir:      claimDir,
+			TmuxSessionID: tmuxSessionID,
+			Interval:      watchInterval,
+			Clear:         true,
+		}
+		if err := ui.LaunchTmuxStatus(ctx, statusCfg); err != nil {
+			fmt.Printf("Status UI error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if watchInterval > 0 {
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			if clearScreen {
+				fmt.Print("\033[H\033[2J")
+			}
+			printBusStatus(socketPath)
+			fmt.Println()
+			printIngestStatus(claimDir)
+			fmt.Println()
+			printSinkStatus(dbPath, tmuxSessionID)
+			time.Sleep(watchInterval)
+		}
+	}
 
 	printBusStatus(socketPath)
 	fmt.Println()

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/opencode/hivemind-tmuxcoder/internal/protocol"
 )
@@ -20,6 +21,18 @@ type TmuxConfig struct {
 	IncludeGlobal bool
 	EventTypes    []string
 	SocketPath    string
+}
+
+// StatusConfig holds settings for launching the tmux status UI.
+type StatusConfig struct {
+	SessionName   string
+	WindowName    string
+	SocketPath    string
+	DBPath        string
+	ClaimDir      string
+	TmuxSessionID string
+	Interval      time.Duration
+	Clear         bool
 }
 
 // LaunchTmuxUI starts a tmux window with a log pane.
@@ -83,6 +96,67 @@ func LaunchTmuxUI(ctx context.Context, config TmuxConfig) error {
 	return tmuxAttach(ctx, sessionName)
 }
 
+// LaunchTmuxStatus starts a tmux window that refreshes tmuxcoder status.
+func LaunchTmuxStatus(ctx context.Context, config StatusConfig) error {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return fmt.Errorf("tmux not found in PATH")
+	}
+
+	if config.WindowName == "" {
+		config.WindowName = "tmuxcoder-status"
+	}
+	if config.Interval <= 0 {
+		config.Interval = 2 * time.Second
+	}
+
+	insideTmux := os.Getenv("TMUX") != ""
+	sessionName := config.SessionName
+	if insideTmux && sessionName == "" {
+		name, err := tmuxDisplay(ctx, "#S")
+		if err != nil {
+			return err
+		}
+		sessionName = name
+	}
+	if sessionName == "" {
+		sessionName = "tmuxcoder"
+	}
+
+	if !insideTmux {
+		exists, err := tmuxHasSession(ctx, sessionName)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if err := tmuxNewSession(ctx, sessionName); err != nil {
+				return err
+			}
+		}
+	}
+
+	statusPane, err := tmuxNewWindow(ctx, sessionName, config.WindowName)
+	if err != nil {
+		return err
+	}
+
+	if err := tmuxSendCommand(ctx, statusPane, buildStatusCommand(config)); err != nil {
+		return err
+	}
+
+	if insideTmux {
+		windowID, err := tmuxWindowID(ctx, statusPane)
+		if err != nil {
+			return err
+		}
+		if err := tmuxSelectWindow(ctx, windowID); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	return tmuxAttach(ctx, sessionName)
+}
+
 func buildLogCommand(config TmuxConfig) []string {
 	binPath := tmuxcoderBinary()
 	args := []string{binPath, "logs", "tail"}
@@ -98,6 +172,27 @@ func buildLogCommand(config TmuxConfig) []string {
 	types := cleanTypes(config.EventTypes)
 	if len(types) > 0 {
 		args = append(args, "--types", strings.Join(types, ","))
+	}
+	return args
+}
+
+func buildStatusCommand(config StatusConfig) []string {
+	binPath := tmuxcoderBinary()
+	args := []string{binPath, "status", "--watch", config.Interval.String()}
+	if config.Clear {
+		args = append(args, "--clear")
+	}
+	if config.SocketPath != "" {
+		args = append(args, "--socket", config.SocketPath)
+	}
+	if config.DBPath != "" {
+		args = append(args, "--db-path", config.DBPath)
+	}
+	if config.ClaimDir != "" {
+		args = append(args, "--claim-dir", config.ClaimDir)
+	}
+	if config.TmuxSessionID != "" {
+		args = append(args, "--tmux-session-id", config.TmuxSessionID)
 	}
 	return args
 }
