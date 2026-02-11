@@ -44,6 +44,16 @@ dist/tmuxcoder start \
 - `start` 默认启动 **bus + ingest + sink**。
 - 会自动写入 `~/.tmuxcoder/current_session_id`，供 skills 自动读取。
 - 如需 UI：加 `--ui`。
+- 启动时会自动把 shared-context 规则写入 `AGENTS.md` / `CLAUDE.md`（可用 `--write-rules=false` 关闭）。
+
+常用参数补充：
+```sh
+# 不写规则模板
+dist/tmuxcoder start --write-rules=false
+
+# 指定写入的规则文件
+dist/tmuxcoder start --rules-files AGENTS.md,CLAUDE.md
+```
 
 ---
 
@@ -98,20 +108,47 @@ dist/tmuxcoder skills install --force
 
 ## 5. 读取 SQLite 上下文（给技能 / 模型用）
 
-最简调用（会自动读取 `~/.tmuxcoder/current_session_id`）：
+最简调用（默认按 tmux_session_id 聚合）：
 ```sh
 python skills/sqlite-context/scripts/fetch_context.py \
-  --session-id <model-session-id> \
   --source codex
 ```
 
 如果需要指定 tmux_session_id：
 ```sh
 python skills/sqlite-context/scripts/fetch_context.py \
-  --session-id <model-session-id> \
   --source claude \
   --tmux-session-id <tmux-session-id>
 ```
+
+如果需要只读取单个 model session：
+```sh
+python skills/sqlite-context/scripts/fetch_context.py \
+  --source codex \
+  --session-id <model-session-id>
+```
+
+---
+
+## 5.1 方案B：强制模型自动调用 skill（推荐）
+
+目标：让 Codex / Claude Code **每次回复前**都自动调用 `sqlite-context` skill，保证共享上下文生效。
+
+做法：把下面模板加入你的模型“系统/规则指令”（具体文件取决于你使用的 CLI）。
+
+**模板（通用）：**
+```
+Before answering any user message, you MUST call the sqlite-context skill to fetch shared context from SQLite.
+Use tmux_session_id resolution order: flag -> TMUXCODER_SESSION_ID -> ~/.tmuxcoder/current_session_id.
+If a session_id is not provided, fetch context across the entire tmux_session_id (shared context).
+Then prepend the fetched context to the prompt and answer the user.
+```
+
+**放置位置（常见）：**
+- Codex：项目级 `AGENTS.md` 或用户级指令配置
+- Claude Code：项目级 `CLAUDE.md` 或用户级指令配置
+
+> 若你的环境使用了不同的规则文件，请以实际为准，但指令内容保持一致即可。
 
 可选参数：
 - `--limit 50`：最近 N 条  
@@ -187,6 +224,26 @@ CREATE TABLE tmux_sessions (
 - 启动时传了 `--tmux-session-id`  
 - 或设置了 `TMUXCODER_SESSION_ID`  
 - 或文件 `~/.tmuxcoder/current_session_id` 存在
+
+4) **fetch_context 输出为空？**  
+通常是 `session_id` 没写入（Codex 的 JSONL 可能不带 session_id）。  
+解决：用 `--from-begin` 重新跑 ingest 或 `--sink-rebuild` 重建数据库，让新版本写入 session_id。
+
+5) **如何确认 skills 读取过 SQLite？**  
+每次调用 `fetch_context.py` 会写入审计表 `context_reads`：  
+```sh
+sqlite3 ~/.tmuxcoder/model_outputs.db "select * from context_reads order by id desc limit 5;"
+```
+字段说明（便于定位范围）：
+- `raw_rows`：匹配条件的总行数  
+- `selected_rows`：应用 `--limit` 后的行数  
+- `merged_rows`：合并相邻角色后的行数  
+- `first_id/last_id`：本次读取的行范围  
+- `first_ts/last_ts`：本次读取的时间范围
+
+6) **为什么 AGENTS.md / CLAUDE.md 被改动？**  
+`start` 默认会自动写入 shared-context 规则模板，确保模型每次回复前调用 sqlite-context。  
+如果不需要，可以用 `--write-rules=false` 关闭，或用 `--rules-files` 指定文件列表。
 
 ---
 

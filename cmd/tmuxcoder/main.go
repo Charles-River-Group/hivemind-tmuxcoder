@@ -7,7 +7,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
+	"io"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	appbus "github.com/opencode/hivemind-tmuxcoder/internal/app/bus"
 	appingest "github.com/opencode/hivemind-tmuxcoder/internal/app/ingest"
 	appsink "github.com/opencode/hivemind-tmuxcoder/internal/app/sink"
+	bridgeclient "github.com/opencode/hivemind-tmuxcoder/internal/bridge/client"
 	"github.com/opencode/hivemind-tmuxcoder/internal/bus/server"
 	"github.com/opencode/hivemind-tmuxcoder/internal/ingest/claim"
 	"github.com/opencode/hivemind-tmuxcoder/internal/ui"
@@ -459,6 +461,8 @@ func handleStart(ctx context.Context, args []string) {
 		sinkRebuild   bool
 		tmuxSessionID string
 		uiEnabled     bool
+		writeRules    bool
+		rulesFiles    string
 	)
 
 	fs.StringVar(&socket, "socket", "", "Bus socket path (default: auto-detect)")
@@ -477,7 +481,16 @@ func handleStart(ctx context.Context, args []string) {
 	fs.BoolVar(&sinkRebuild, "sink-rebuild", false, "Drop and recreate model_outputs on start")
 	fs.StringVar(&tmuxSessionID, "tmux-session-id", "", "Tmuxcoder session ID for sink writes")
 	fs.BoolVar(&uiEnabled, "ui", false, "Launch tmux UI")
+	fs.BoolVar(&writeRules, "write-rules", true, "Write shared-context rules to AGENTS.md and CLAUDE.md")
+	fs.StringVar(&rulesFiles, "rules-files", "AGENTS.md,CLAUDE.md", "Comma-separated rules files to write")
 	fs.Parse(args)
+
+	if writeRules {
+		if err := writeRulesTemplates(parseCSV(rulesFiles)); err != nil {
+			fmt.Printf("Failed to write rules: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	if tmuxSessionID != "" {
 		_ = os.Setenv("TMUXCODER_SESSION_ID", tmuxSessionID)
@@ -596,6 +609,62 @@ func waitForSocket(path string, timeout time.Duration) error {
 	return fmt.Errorf("bus socket not ready: %s", filepath.Clean(path))
 }
 
+const rulesMarkerStart = "<!-- tmuxcoder:shared-context-rules:start -->"
+const rulesMarkerEnd = "<!-- tmuxcoder:shared-context-rules:end -->"
+
+const rulesTemplate = `<!-- tmuxcoder:shared-context-rules:start -->
+## Tmuxcoder Shared Context Rules
+
+Before answering any user message, you MUST call the sqlite-context skill to fetch shared context from SQLite.
+Use tmux_session_id resolution order: flag -> TMUXCODER_SESSION_ID -> ~/.tmuxcoder/current_session_id.
+If a session_id is not provided, fetch context across the entire tmux_session_id (shared context).
+Then prepend the fetched context to the prompt and answer the user.
+<!-- tmuxcoder:shared-context-rules:end -->
+`
+
+func writeRulesTemplates(files []string) error {
+	for _, name := range files {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if err := writeRulesTemplate(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeRulesTemplate(path string) error {
+	target := path
+	if !filepath.IsAbs(target) {
+		if cwd, err := os.Getwd(); err == nil {
+			target = filepath.Join(cwd, path)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+
+	existing, err := os.ReadFile(target)
+	if err == nil {
+		content := string(existing)
+		if strings.Contains(content, rulesMarkerStart) {
+			return nil
+		}
+		sep := "\n"
+		if strings.HasSuffix(content, "\n") {
+			sep = ""
+		}
+		return os.WriteFile(target, []byte(content+sep+"\n"+rulesTemplate), 0o644)
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(target, []byte(rulesTemplate), 0o644)
+}
+
 func printBusStatus(socketFlag string) {
 	socketPath := busSocketPath(socketFlag)
 	fmt.Println("bus:")
@@ -612,7 +681,7 @@ func printBusStatus(socketFlag string) {
 		fmt.Printf("  status: error (%v)\n", err)
 		return
 	}
-	if err := canDialUnix(socketPath, 400*time.Millisecond); err != nil {
+	if err := canRegisterBus(socketPath, 800*time.Millisecond); err != nil {
 		fmt.Printf("  status: not responding (%v)\n", err)
 		return
 	}
@@ -717,12 +786,24 @@ func printSinkStatus(dbPathFlag, tmuxSessionID string) {
 	}
 }
 
-func canDialUnix(path string, timeout time.Duration) error {
-	conn, err := net.DialTimeout("unix", path, timeout)
-	if err != nil {
+func canRegisterBus(path string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cfg := bridgeclient.DefaultConfig()
+	cfg.SocketPath = path
+	cfg.Label = "tmuxcoder-status"
+	cfg.DriveMode = "status"
+	client := bridgeclient.New(cfg)
+
+	oldOutput := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(oldOutput)
+
+	if err := client.Connect(ctx); err != nil {
 		return err
 	}
-	return conn.Close()
+	return client.Close()
 }
 
 func readClaim(lockPath string) (claim.LockInfo, bool, error) {

@@ -268,6 +268,30 @@ func initDB(db *sql.DB, rebuild bool) error {
 		return err
 	}
 
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS context_reads (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		ts TEXT NOT NULL,
+		tmux_session_id TEXT,
+		session_id TEXT,
+		source TEXT,
+		rows INTEGER,
+		max_chars INTEGER,
+		limit_rows INTEGER,
+		raw_rows INTEGER,
+		selected_rows INTEGER,
+		merged_rows INTEGER,
+		first_id INTEGER,
+		last_id INTEGER,
+		first_ts TEXT,
+		last_ts TEXT
+	);`); err != nil {
+		return err
+	}
+
+	if err := ensureContextReadsColumns(db); err != nil {
+		return err
+	}
+
 	if _, err := db.Exec(`ALTER TABLE model_outputs ADD COLUMN tmux_session_id TEXT;`); err != nil {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			return err
@@ -285,6 +309,51 @@ func initDB(db *sql.DB, rebuild bool) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func ensureContextReadsColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(context_reads);`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	columns := map[string]string{
+		"raw_rows":      "INTEGER",
+		"selected_rows": "INTEGER",
+		"merged_rows":   "INTEGER",
+		"first_id":      "INTEGER",
+		"last_id":       "INTEGER",
+		"first_ts":      "TEXT",
+		"last_ts":       "TEXT",
+	}
+
+	for name, colType := range columns {
+		if existing[name] {
+			continue
+		}
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE context_reads ADD COLUMN %s %s;", name, colType)); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

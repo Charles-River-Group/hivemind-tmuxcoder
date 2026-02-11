@@ -28,7 +28,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Fetch shared context from SQLite.")
     p.add_argument("--db-path", default=default_db_path())
     p.add_argument("--tmux-session-id", default="")
-    p.add_argument("--session-id", required=True)
+    p.add_argument("--session-id", default="")
     p.add_argument("--source", required=True, choices=["codex", "claude"])
     p.add_argument("--limit", type=int, default=50)
     p.add_argument("--max-chars", type=int, default=12000)
@@ -71,21 +71,104 @@ def main():
 
     cur.execute(
         """
-        SELECT role, text
-        FROM model_outputs
-        WHERE tmux_session_id = ? AND session_id = ? AND source = ?
-        ORDER BY ts ASC, id ASC
-        """,
-        (tmux_session_id, args.session_id, args.source),
+        CREATE TABLE IF NOT EXISTS context_reads (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts TEXT NOT NULL,
+          tmux_session_id TEXT,
+          session_id TEXT,
+          source TEXT,
+          rows INTEGER,
+          max_chars INTEGER,
+          limit_rows INTEGER,
+          raw_rows INTEGER,
+          selected_rows INTEGER,
+          merged_rows INTEGER,
+          first_id INTEGER,
+          last_id INTEGER,
+          first_ts TEXT,
+          last_ts TEXT
+        )
+        """
     )
+    cur.execute("PRAGMA table_info(context_reads)")
+    existing_cols = {row[1] for row in cur.fetchall()}
+    column_defs = {
+        "raw_rows": "INTEGER",
+        "selected_rows": "INTEGER",
+        "merged_rows": "INTEGER",
+        "first_id": "INTEGER",
+        "last_id": "INTEGER",
+        "first_ts": "TEXT",
+        "last_ts": "TEXT",
+    }
+    for name, col_type in column_defs.items():
+        if name not in existing_cols:
+            cur.execute(f"ALTER TABLE context_reads ADD COLUMN {name} {col_type}")
+
+    if args.session_id:
+        cur.execute(
+            """
+            SELECT id, ts, role, text
+            FROM model_outputs
+            WHERE tmux_session_id = ? AND session_id = ? AND source = ?
+            ORDER BY ts ASC, id ASC
+            """,
+            (tmux_session_id, args.session_id, args.source),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id, ts, role, text
+            FROM model_outputs
+            WHERE tmux_session_id = ? AND source = ?
+            ORDER BY ts ASC, id ASC
+            """,
+            (tmux_session_id, args.source),
+        )
     rows = cur.fetchall()
     conn.close()
 
+    raw_rows = len(rows)
     if args.limit > 0 and len(rows) > args.limit:
         rows = rows[-args.limit :]
 
-    merged = merge_roles(rows)
+    selected_rows = len(rows)
+    if rows:
+        first_id, first_ts = rows[0][0], rows[0][1]
+        last_id, last_ts = rows[-1][0], rows[-1][1]
+    else:
+        first_id = last_id = None
+        first_ts = last_ts = None
+
+    merged = merge_roles([(role, text) for _, _, role, text in rows])
     merged = trim_by_chars(merged, args.max_chars)
+    merged_rows = len(merged)
+
+    cur.execute(
+        """
+        INSERT INTO context_reads (
+          ts, tmux_session_id, session_id, source, rows, max_chars, limit_rows,
+          raw_rows, selected_rows, merged_rows, first_id, last_id, first_ts, last_ts
+        )
+        VALUES (datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            tmux_session_id,
+            args.session_id or None,
+            args.source,
+            len(merged),
+            args.max_chars,
+            args.limit,
+            raw_rows,
+            selected_rows,
+            merged_rows,
+            first_id,
+            last_id,
+            first_ts,
+            last_ts,
+        ),
+    )
+    conn.commit()
 
     if args.format == "json":
         print(json.dumps([{"role": r, "content": t} for r, t in merged], ensure_ascii=False))

@@ -149,6 +149,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if preclaimID != "" {
 		claimedSessions[preclaimID] = true
 	}
+	fallbackCodexID, fallbackClaudeID := resolveFallbackSessionIDs(cfg, logPath)
 
 	watcherCfg := &ingest.WatcherConfig{
 		WatchDirs:     logPaths,
@@ -173,6 +174,9 @@ func Run(ctx context.Context, cfg Config) error {
 		if msg == nil {
 			log.Printf("[INGEST] Line skipped (not a user/assistant message)")
 			return
+		}
+		if msg.SessionID == "" {
+			msg.SessionID = fallbackSessionID(msg.Source, fallbackCodexID, fallbackClaudeID)
 		}
 		log.Printf("[INGEST] Parsed message: role=%s source=%s text_len=%d", msg.Role, msg.Source, len(msg.Text))
 
@@ -223,6 +227,41 @@ func expandHome(path string) string {
 		return filepath.Join(home, path[2:])
 	}
 	return path
+}
+
+func resolveFallbackSessionIDs(cfg Config, logPath string) (string, string) {
+	fallbackCodex := strings.TrimSpace(cfg.CodexSession)
+	fallbackClaude := strings.TrimSpace(cfg.ClaudeSession)
+
+	if logPath != "" {
+		if id := codex.GetSessionIDFromPath(logPath); id != "" {
+			fallbackCodex = id
+		} else {
+			base := strings.TrimSuffix(filepath.Base(logPath), ".jsonl")
+			if base != "" {
+				fallbackClaude = base
+			}
+		}
+	}
+
+	return fallbackCodex, fallbackClaude
+}
+
+func fallbackSessionID(source, codexID, claudeID string) string {
+	switch source {
+	case "codex":
+		return codexID
+	case "claude":
+		return claudeID
+	default:
+		if codexID != "" && claudeID == "" {
+			return codexID
+		}
+		if claudeID != "" && codexID == "" {
+			return claudeID
+		}
+		return ""
+	}
 }
 
 func formatUILogText(msg *ingest.ParsedMessage) string {
