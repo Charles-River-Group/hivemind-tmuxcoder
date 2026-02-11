@@ -9,35 +9,27 @@ description: Read shared context from ~/.tmuxcoder/model_outputs.db for a specif
 Build shared context from SQLite so Codex and Claude Code use the same conversation history.
 
 ## Required Inputs
-- `tmux_session_id` (must be resolved via the standard order below)
-- `session_id` (optional; set if you want to filter to a single model session)
 - `source` (`codex` or `claude`)
+- `tmux_session_id` (optional; resolved by `tmuxcoder context` automatically)
+- `session_id` (optional; filter to a single model session)
 
-## tmux_session_id Resolution Order (must follow)
-1) CLI flag `--tmux-session-id`
-2) Environment variable `TMUXCODER_SESSION_ID`
-3) File `~/.tmuxcoder/current_session_id`
+## Execution Rule (Important)
+Do **not** run discovery commands (`ls`, `rg`, `strings`, `tmuxcoder context --help`, etc.).
+Run **exactly one command** to fetch context:
+```
+tmuxcoder context --source <codex|claude>
+```
 
-If none is present, the script must fail with a clear error.
+If needed, add optional flags in the same command:
+```
+tmuxcoder context --source codex --tmux-session-id <tmux-id> --session-id <model-session-id> --limit 50 --max-chars 12000 --format text
+```
 
 ## Default DB Path
-- `~/.tmuxcoder/model_outputs.db`
+Handled internally by `tmuxcoder context`.
 
 ## SQL Standard
-```sql
-SELECT ts, role, text
-FROM model_outputs
-WHERE tmux_session_id = ? AND session_id = ? AND source = ?
-ORDER BY ts ASC, id ASC;
-```
-
-If `session_id` is omitted, the query aggregates across the entire tmux session:
-```sql
-SELECT ts, role, text
-FROM model_outputs
-WHERE tmux_session_id = ? AND source = ?
-ORDER BY ts ASC, id ASC;
-```
+Implemented inside `tmuxcoder context` (no direct SQL needed here).
 
 ## Audit Log (context_reads)
 Each skill call records an audit row in SQLite:
@@ -69,20 +61,7 @@ CREATE TABLE IF NOT EXISTS context_reads (
 ...
 ```
 
-## Scripts
-Use `scripts/fetch_context.py` to fetch and format context.
-```
-python scripts/fetch_context.py \
-  --source codex \
-  --tmux-session-id <tmux-id> \
-  --limit 50 \
-  --max-chars 12000 \
-  --format text
-```
-
 ## Minimal Skill Call (Recommended)
-If `TMUXCODER_SESSION_ID` is set or `~/.tmuxcoder/current_session_id` exists, you can omit `--tmux-session-id`.
 ```
-python scripts/fetch_context.py \
-  --source codex
+tmuxcoder context --source codex
 ```

@@ -1,6 +1,7 @@
-.PHONY: all build clean package help bus ui up down
+.PHONY: all build clean package help bus ui up down install
 
 BINDIR ?= dist
+PREFIX ?= $(HOME)/.local/bin
 CLI_BIN := $(BINDIR)/tmuxcoder
 PACKAGE_BINS := $(notdir $(CLI_BIN))
 RUN_DIR ?= .run
@@ -29,6 +30,10 @@ package: build
 clean:
 	rm -f $(CLI_BIN) $(BINDIR)/tmuxcoder-*.tar.gz
 
+install: build
+	@mkdir -p $(PREFIX)
+	install -m 0755 $(CLI_BIN) $(PREFIX)/tmuxcoder
+
 bus: $(CLI_BIN)
 	@set -e; \
 	mkdir -p $(RUN_DIR); \
@@ -53,6 +58,7 @@ help:
 	@echo "  build    Build tmuxcoder binaries into $(BINDIR)"
 	@echo "  package  Build and create tarball in $(BINDIR)"
 	@echo "  clean    Remove built binaries and packages"
+	@echo "  install  Install tmuxcoder to $(PREFIX) (override with PREFIX=...)"
 	@echo "  bus      Start bus in background (logs in $(RUN_DIR))"
 	@echo "  ui       Start interactive UI (foreground)"
 	@echo "  up       Build, start bus, then run UI"
