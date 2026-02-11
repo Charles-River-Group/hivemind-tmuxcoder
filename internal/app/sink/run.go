@@ -23,6 +23,7 @@ type Config struct {
 	IncludeGlobal bool
 	Sources       []string
 	Rebuild       bool
+	TmuxSessionID string
 }
 
 type logEvent struct {
@@ -35,7 +36,8 @@ type logEvent struct {
 }
 
 type writer struct {
-	stmt *sql.Stmt
+	stmt          *sql.Stmt
+	tmuxSessionID string
 }
 
 func Run(ctx context.Context, cfg Config) error {
@@ -59,8 +61,8 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	stmt, err := db.Prepare(`INSERT INTO model_outputs
-		(ts, source, role, session_id, workspace_uid, text)
-		VALUES (?, ?, ?, ?, ?, ?)`)
+		(ts, source, role, session_id, tmux_session_id, workspace_uid, text)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare insert: %w", err)
 	}
@@ -85,7 +87,19 @@ func Run(ctx context.Context, cfg Config) error {
 	var wg sync.WaitGroup
 	var stopped atomic.Bool
 
-	w := &writer{stmt: stmt}
+	tmuxSessionID, err := resolveTmuxSessionID(cfg.TmuxSessionID)
+	if err != nil {
+		return err
+	}
+
+	if err := registerTmuxSession(db, tmuxSessionID); err != nil {
+		return err
+	}
+
+	w := &writer{
+		stmt:          stmt,
+		tmuxSessionID: tmuxSessionID,
+	}
 
 	wg.Add(1)
 	go func() {
@@ -144,7 +158,7 @@ func Run(ctx context.Context, cfg Config) error {
 }
 
 func (w *writer) insertRow(ev logEvent) {
-	_, err := w.stmt.Exec(ev.ts, ev.source, ev.role, nullIfEmpty(ev.sessionID), ev.workspaceUID, ev.text)
+	_, err := w.stmt.Exec(ev.ts, ev.source, ev.role, nullIfEmpty(ev.sessionID), w.tmuxSessionID, ev.workspaceUID, ev.text)
 	if err != nil {
 		log.Printf("insert failed: %v", err)
 	}
@@ -239,6 +253,7 @@ func initDB(db *sql.DB, rebuild bool) error {
 		source TEXT NOT NULL,
 		role TEXT NOT NULL,
 		session_id TEXT,
+		tmux_session_id TEXT,
 		workspace_uid TEXT,
 		text TEXT NOT NULL
 	);`)
@@ -246,10 +261,24 @@ func initDB(db *sql.DB, rebuild bool) error {
 		return err
 	}
 
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS tmux_sessions (
+		tmux_session_id TEXT PRIMARY KEY,
+		created_at TEXT NOT NULL
+	);`); err != nil {
+		return err
+	}
+
+	if _, err := db.Exec(`ALTER TABLE model_outputs ADD COLUMN tmux_session_id TEXT;`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+
 	indexes := []string{
 		"CREATE INDEX IF NOT EXISTS idx_model_outputs_ts ON model_outputs(ts);",
 		"CREATE INDEX IF NOT EXISTS idx_model_outputs_source ON model_outputs(source);",
 		"CREATE INDEX IF NOT EXISTS idx_model_outputs_session ON model_outputs(session_id);",
+		"CREATE INDEX IF NOT EXISTS idx_model_outputs_tmux_session ON model_outputs(tmux_session_id);",
 	}
 	for _, stmt := range indexes {
 		if _, err := db.Exec(stmt); err != nil {
@@ -280,6 +309,47 @@ func defaultDBPath() string {
 		return "./tmuxcoder-model-outputs.db"
 	}
 	return filepath.Join(home, ".tmuxcoder", "model_outputs.db")
+}
+
+func registerTmuxSession(db *sql.DB, tmuxSessionID string) error {
+	if tmuxSessionID == "" {
+		return fmt.Errorf("tmux_session_id is required")
+	}
+	_, err := db.Exec(
+		`INSERT OR IGNORE INTO tmux_sessions (tmux_session_id, created_at) VALUES (?, datetime('now'))`,
+		tmuxSessionID,
+	)
+	return err
+}
+
+func resolveTmuxSessionID(explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	if value := strings.TrimSpace(os.Getenv("TMUXCODER_SESSION_ID")); value != "" {
+		return value, nil
+	}
+	if value := readSessionFile(); value != "" {
+		return value, nil
+	}
+	return "", fmt.Errorf("tmux_session_id is required (use --tmux-session-id, TMUXCODER_SESSION_ID, or ~/.tmuxcoder/current_session_id)")
+}
+
+func readSessionFile() string {
+	path := defaultSessionFile()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func defaultSessionFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".tmuxcoder", "current_session_id")
 }
 
 func nullIfEmpty(value string) interface{} {
