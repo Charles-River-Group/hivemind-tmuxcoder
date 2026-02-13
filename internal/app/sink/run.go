@@ -60,7 +60,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("failed to init db: %w", err)
 	}
 
-	stmt, err := db.Prepare(`INSERT INTO model_outputs
+	stmt, err := db.Prepare(`INSERT OR IGNORE INTO model_outputs
 		(ts, source, role, session_id, tmux_session_id, workspace_uid, text)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
@@ -303,6 +303,7 @@ func initDB(db *sql.DB, rebuild bool) error {
 		"CREATE INDEX IF NOT EXISTS idx_model_outputs_source ON model_outputs(source);",
 		"CREATE INDEX IF NOT EXISTS idx_model_outputs_session ON model_outputs(session_id);",
 		"CREATE INDEX IF NOT EXISTS idx_model_outputs_tmux_session ON model_outputs(tmux_session_id);",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_model_outputs_dedup ON model_outputs(ts, source, role, session_id, tmux_session_id, text);",
 	}
 	for _, stmt := range indexes {
 		if _, err := db.Exec(stmt); err != nil {
