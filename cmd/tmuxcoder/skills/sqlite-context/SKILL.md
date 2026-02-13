@@ -9,7 +9,7 @@ description: Read shared context from ~/.tmuxcoder/model_outputs.db for a specif
 Build shared context from SQLite so Codex and Claude Code use the same conversation history.
 
 ## Required Inputs
-- `source` (`codex` or `claude`)
+- `source` (optional; `codex` or `claude` — omit to get all sources)
 - `tmux_session_id` (optional; resolved by `tmuxcoder context` automatically)
 - `session_id` (optional; filter to a single model session)
 
@@ -17,7 +17,7 @@ Build shared context from SQLite so Codex and Claude Code use the same conversat
 Do **not** run discovery commands (`ls`, `rg`, `strings`, `tmuxcoder context --help`, etc.).
 Run **exactly one command** to fetch context:
 ```
-tmuxcoder context --source <codex|claude>
+tmuxcoder context
 ```
 
 If needed, add optional flags in the same command:
@@ -63,5 +63,5 @@ CREATE TABLE IF NOT EXISTS context_reads (
 
 ## Minimal Skill Call (Recommended)
 ```
-tmuxcoder context --source codex
+tmuxcoder context
 ```

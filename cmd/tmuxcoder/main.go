@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
@@ -132,7 +133,7 @@ func handleContext(ctx context.Context, args []string) {
 	fs.BoolVar(&debug, "debug", false, "Print resolved paths and env to stderr")
 	fs.Parse(args)
 
-	if source != "codex" && source != "claude" {
+	if source != "" && source != "codex" && source != "claude" {
 		fmt.Println("context error: --source must be codex or claude")
 		os.Exit(1)
 	}
@@ -427,52 +428,63 @@ func handleSkillsInstall(ctx context.Context, args []string) {
 		force     bool
 	)
 
-	fs.StringVar(&skillsDir, "skills-dir", "skills", "Path to skills directory (default: ./skills)")
+	fs.StringVar(&skillsDir, "skills-dir", "", "Path to skills directory (empty = use embedded)")
 	fs.StringVar(&target, "target", "both", "Install target: codex|claude|both")
 	fs.StringVar(&codexDir, "codex-dir", "~/.codex/skills", "Codex skills directory")
 	fs.StringVar(&claudeDir, "claude-dir", "~/.claude/skills", "Claude Code skills directory")
 	fs.BoolVar(&force, "force", false, "Overwrite existing skills")
 	fs.Parse(args)
 
-	srcDir := expandHome(skillsDir)
-	if _, err := os.Stat(srcDir); err != nil {
-		fmt.Printf("Skills dir not found: %s\n", srcDir)
-		os.Exit(1)
-	}
-
-	skillNames, err := listSkillDirs(srcDir)
-	if err != nil {
-		fmt.Printf("Failed to read skills dir: %v\n", err)
-		os.Exit(1)
-	}
-	if len(skillNames) == 0 {
-		fmt.Printf("No skills found in: %s\n", srcDir)
-		os.Exit(1)
-	}
-
+	var targets []string
 	switch target {
 	case "codex":
-		if err := installSkills(srcDir, expandHome(codexDir), skillNames, force); err != nil {
-			fmt.Printf("Install failed: %v\n", err)
-			os.Exit(1)
-		}
+		targets = []string{expandHome(codexDir)}
 	case "claude":
-		if err := installSkills(srcDir, expandHome(claudeDir), skillNames, force); err != nil {
-			fmt.Printf("Install failed: %v\n", err)
-			os.Exit(1)
-		}
+		targets = []string{expandHome(claudeDir)}
 	case "both":
-		if err := installSkills(srcDir, expandHome(codexDir), skillNames, force); err != nil {
-			fmt.Printf("Install failed: %v\n", err)
-			os.Exit(1)
-		}
-		if err := installSkills(srcDir, expandHome(claudeDir), skillNames, force); err != nil {
-			fmt.Printf("Install failed: %v\n", err)
-			os.Exit(1)
-		}
+		targets = []string{expandHome(codexDir), expandHome(claudeDir)}
 	default:
 		fmt.Printf("Invalid --target: %s (expected codex|claude|both)\n", target)
 		os.Exit(1)
+	}
+
+	if skillsDir == "" {
+		skillNames, err := listSkillDirsFS(embeddedSkills, "skills")
+		if err != nil {
+			fmt.Printf("Failed to read embedded skills: %v\n", err)
+			os.Exit(1)
+		}
+		if len(skillNames) == 0 {
+			fmt.Println("No embedded skills found")
+			os.Exit(1)
+		}
+		for _, dst := range targets {
+			if err := installSkillsFromFS(embeddedSkills, "skills", dst, skillNames, force); err != nil {
+				fmt.Printf("Install failed: %v\n", err)
+				os.Exit(1)
+			}
+		}
+	} else {
+		srcDir := expandHome(skillsDir)
+		if _, err := os.Stat(srcDir); err != nil {
+			fmt.Printf("Skills dir not found: %s\n", srcDir)
+			os.Exit(1)
+		}
+		skillNames, err := listSkillDirs(srcDir)
+		if err != nil {
+			fmt.Printf("Failed to read skills dir: %v\n", err)
+			os.Exit(1)
+		}
+		if len(skillNames) == 0 {
+			fmt.Printf("No skills found in: %s\n", srcDir)
+			os.Exit(1)
+		}
+		for _, dst := range targets {
+			if err := installSkills(srcDir, dst, skillNames, force); err != nil {
+				fmt.Printf("Install failed: %v\n", err)
+				os.Exit(1)
+			}
+		}
 	}
 
 	fmt.Println("Skills installed successfully.")
@@ -613,6 +625,12 @@ func handleStart(ctx context.Context, args []string) {
 		if err := writeRulesTemplates(parseCSV(rulesFiles)); err != nil {
 			fmt.Printf("Failed to write rules: %v\n", err)
 			os.Exit(1)
+		}
+	}
+
+	for _, dir := range []string{"~/.codex/skills", "~/.claude/skills"} {
+		if err := ensureSkillInstalled("sqlite-context", expandHome(dir)); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not install sqlite-context skill to %s: %v\n", dir, err)
 		}
 	}
 
@@ -828,18 +846,19 @@ func readContextRows(path, tmuxSessionID, sessionID, source string) ([]contextRo
 		return nil, err
 	}
 
-	var rows *sql.Rows
+	query := `SELECT id, ts, role, text FROM model_outputs WHERE tmux_session_id = ?`
+	args := []interface{}{tmuxSessionID}
 	if sessionID != "" {
-		rows, err = db.Query(
-			`SELECT id, ts, role, text FROM model_outputs WHERE tmux_session_id = ? AND session_id = ? AND source = ? ORDER BY ts ASC, id ASC`,
-			tmuxSessionID, sessionID, source,
-		)
-	} else {
-		rows, err = db.Query(
-			`SELECT id, ts, role, text FROM model_outputs WHERE tmux_session_id = ? AND source = ? ORDER BY ts ASC, id ASC`,
-			tmuxSessionID, source,
-		)
+		query += ` AND session_id = ?`
+		args = append(args, sessionID)
 	}
+	if source != "" {
+		query += ` AND source = ?`
+		args = append(args, source)
+	}
+	query += ` ORDER BY ts ASC, id ASC`
+
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1062,8 +1081,9 @@ const rulesTemplate = `<!-- tmuxcoder:shared-context-rules:start -->
 ## Tmuxcoder Shared Context Rules
 
 You MUST fetch shared context by running exactly one command:
-tmuxcoder context --source <codex|claude>
+tmuxcoder context
 
+--source is optional (codex|claude). Omit it to get context from all sources.
 Do NOT run discovery commands (ls/rg/strings/--help). Do NOT search for TMUXCODER_ROOT.
 If tmux_session_id is needed, pass --tmux-session-id or ask the user to set TMUXCODER_SESSION_ID.
 Then prepend the fetched context to the prompt and answer the user.
@@ -1480,6 +1500,78 @@ func expandHome(path string) string {
 		return filepath.Join(home, path[2:])
 	}
 	return path
+}
+
+func listSkillDirsFS(fsys fs.FS, root string) ([]string, error) {
+	entries, err := fs.ReadDir(fsys, root)
+	if err != nil {
+		return nil, err
+	}
+	var skills []string
+	for _, entry := range entries {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			skills = append(skills, entry.Name())
+		}
+	}
+	return skills, nil
+}
+
+func installSkillsFromFS(fsys fs.FS, srcRoot, dstRoot string, names []string, force bool) error {
+	if err := os.MkdirAll(dstRoot, 0o755); err != nil {
+		return err
+	}
+	for _, name := range names {
+		src := srcRoot + "/" + name
+		dst := filepath.Join(dstRoot, name)
+		if _, err := os.Stat(dst); err == nil {
+			if !force {
+				return fmt.Errorf("skill already exists: %s (use --force to overwrite)", dst)
+			}
+			if err := os.RemoveAll(dst); err != nil {
+				return err
+			}
+		}
+		if err := copyDirFromFS(fsys, src, dst); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyDirFromFS(fsys fs.FS, src, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	entries, err := fs.ReadDir(fsys, src)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		srcPath := src + "/" + entry.Name()
+		dstPath := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			if err := copyDirFromFS(fsys, srcPath, dstPath); err != nil {
+				return err
+			}
+			continue
+		}
+		data, err := fs.ReadFile(fsys, srcPath)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureSkillInstalled(skillName, targetDir string) error {
+	dst := filepath.Join(targetDir, skillName)
+	if _, err := os.Stat(dst); err == nil {
+		return nil // already installed
+	}
+	return installSkillsFromFS(embeddedSkills, "skills", targetDir, []string{skillName}, false)
 }
 
 func writeSessionFile(value string) error {
